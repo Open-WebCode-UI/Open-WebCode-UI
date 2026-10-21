@@ -1,0 +1,19 @@
+{
+  "name": "agentic-coding-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w web",
+    "start": "npm run start -w server",
+    "test": "npm run test --workspaces --if-present",
+    "audit": "npm audit --omit=dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.5"
+  }
+}

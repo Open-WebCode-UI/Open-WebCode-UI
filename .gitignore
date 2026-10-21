@@ -147,3 +147,28 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# macOS
+.DS_Store
+
+# Runtime data (SQLite DB, workspaces, checkpoints, attachments, TLS certs, encryption keys)
+# DATA_DIR defaults to ./data but is also created under server/ and web/ depending on cwd
+data/
+**/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+.encryption-key
+
+# TLS certificates and keys
+*.pem
+*.key
+*.crt
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
