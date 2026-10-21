@@ -6,7 +6,10 @@
     "dev": "node --env-file-if-exists=../.env --watch src/index.js",
     "start": "node --env-file-if-exists=../.env src/index.js",
     "test": "vitest run",
-    "reset-breakglass": "node --env-file-if-exists=../.env src/cli/reset-breakglass.js"
+    "reset-breakglass": "node --env-file-if-exists=../.env src/cli/reset-breakglass.js",
+    "docs:lint": "redocly lint",
+    "docs:build": "node scripts/build-docs.mjs",
+    "build": "npm run docs:build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -33,7 +36,10 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@redocly/cli": "^2.67.1",
+    "redoc": "^2.5.4",
     "supertest": "^7.3.1",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "yaml": "^2.9.1"
   }
 }

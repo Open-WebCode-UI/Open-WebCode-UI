@@ -52,6 +52,10 @@ export const PERMISSIONS = {
   'course.learn': 'Take courses you are enrolled in',
   'course.author': 'Create and edit own courses, manage enrollment and grade',
   'course.admin': 'Manage all courses, course group assignments and tutor panels',
+  'api.use': 'Create own API keys and call the provider API (/v1) with them',
+  'api.docs.read': 'View the API documentation',
+  'api.keys.read': 'View every API key (never its secret)',
+  'api.keys.write': 'Revoke any API key',
 };
 
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS);
@@ -64,6 +68,10 @@ export const BUILTIN_ROLES = {
   reporter: {
     description: 'View usage and cost reports',
     permissions: ['report.read'],
+  },
+  'api-user': {
+    description: 'Use the provider API with own keys and read its documentation',
+    permissions: ['api.use', 'api.docs.read'],
   },
   'mcp-admin': {
     description: 'Manage tenant MCP servers',

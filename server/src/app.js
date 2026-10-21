@@ -9,6 +9,9 @@ import { errorHandler, registry } from './http.js';
 import { authRouter } from './routes/auth.js';
 import { samlRouter } from './auth/saml.js';
 import { adminRouter } from './routes/admin.js';
+import { apiKeysRouter } from './routes/apikeys.js';
+import { apiDocsRouter } from './routes/apidocs.js';
+import { v1Router } from './routes/v1.js';
 import { providersRouter } from './routes/providers.js';
 import { badgesRouter } from './routes/badges.js';
 import { projectsRouter } from './routes/projects.js';
@@ -64,6 +67,8 @@ export function createApp({ deps = {} } = {}) {
     referrerPolicy: { policy: 'same-origin' }, crossOriginOpenerPolicy: { policy: 'same-origin' },
   }));
   app.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  // The provider API authenticates with API keys (never cookies) and parses its own, larger bodies, so it sits ahead of both.
+  app.use('/v1', v1Router({ adapterFactory: deps.adapterFactory }));
   // The zip import route parses its own (much larger, admin-configurable) body; the global 1mb parser would reject it first.
   const json1mb = express.json({ limit: '1mb' });
   app.use((req, res, next) => (req.path === '/api/projects/import' ? next() : json1mb(req, res, next)));
@@ -72,6 +77,8 @@ export function createApp({ deps = {} } = {}) {
   app.use(authRouter());
   app.use(samlRouter());
   app.use(adminRouter({ webSearch: deps.webSearch }));
+  app.use(apiKeysRouter());
+  app.use(apiDocsRouter());
   app.use(providersRouter({ adapterFactory: deps.adapterFactory, lookup: deps.lookup }));
   app.use(badgesRouter());
   app.use(projectsRouter());

@@ -336,3 +336,17 @@ CREATE TABLE IF NOT EXISTS exercise_workspaces (
   project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   snapshot TEXT, policy_json TEXT, PRIMARY KEY (attempt_id, question_id)
 );
+
+-- Keys for the provider API (/v1). Only a hash is kept; the key is shown once, when it is created.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  prefix TEXT NOT NULL,          -- first characters of the key, so a person can recognise it in a list
+  key_hash TEXT NOT NULL UNIQUE,
+  model_ids TEXT,                -- JSON array of models.id this key may use; NULL = every model its owner may use
+  expires_at INTEGER,            -- NULL = never
+  last_used_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys(user_id);

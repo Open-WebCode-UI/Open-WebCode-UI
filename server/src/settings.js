@@ -115,6 +115,12 @@ export const schemas = {
     defaultRoleId: z.number().int().nullable(),
     clockSkewSec: z.number().int().min(0).max(300),
   }),
+  api: z.object({
+    enabled: z.boolean(), // off: /v1 refuses every request (the keys are kept)
+    maxKeysPerUser: z.number().int().min(1).max(100),
+    rateLimitPerMin: z.number().int().min(1).max(100000), // per key
+    maxKeyDays: z.number().int().min(0).max(3650), // 0 = keys may be created without an expiry
+  }),
   tls: z.object({ mode: z.enum(['unset', 'self-signed', 'none']) }),
   setup: z.object({ completed: z.boolean(), skipped: z.boolean(), completedBy: z.number().int().nullable() }),
   webSearch: z.object({
@@ -174,6 +180,8 @@ export const defaults = {
   },
   // The administrator's HTTPS decision; only used when neither the environment nor a reverse proxy decides. Applied at startup.
   tls: { mode: 'unset' },
+  // The provider API this server offers to other programs. Off until an administrator turns it on.
+  api: { enabled: false, maxKeysPerUser: 10, rateLimitPerMin: 60, maxKeyDays: 0 },
   // First-run setup wizard: shown to an administrator until someone finishes or skips it.
   setup: { completed: false, skipped: false, completedBy: null },
   // The API key is stored encrypted (apiKeyEnc) and never returned to the browser.

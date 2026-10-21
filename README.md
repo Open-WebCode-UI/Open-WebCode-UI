@@ -22,6 +22,15 @@ Use local and cloud models interchangeably, side by side.
 
 **MCP** servers extend the agent with external tools. Remote servers over HTTPS are supported.
 
+## Use it as a provider (API server)
+
+Besides calling providers, the server can be one: OpenAI-compatible clients can use `POST /v1/chat/completions` and `GET /v1/models` with any model set up here.
+
+- **Off by default.** An administrator turns it on via `PUT /api/admin/api-settings` (`{"enabled": true}`; needs `settings.write` and step-up MFA).
+- **Permissions:** `api.use` (own keys + calling `/v1`), `api.docs.read`, `api.keys.read`, `api.keys.write`. The built-in `api-user` role holds the first two. `api.use` is re-checked on every request, so removing it stops that user's keys at once.
+- **Keys** (`/api/api-keys`): create (shown once, stored hashed), rename/restrict to models, delete; administrators can list and revoke all keys under `/api/admin/api-keys`.
+- **Docs:** written as OpenAPI (`server/openapi/openapi.yaml`) and built with Redocly: `npm run docs:lint -w server`, `npm run docs:build -w server` (also part of `npm run build`). People with `api.docs.read` see them at `/api/docs`.
+
 ## Quick start
 
 Requires Node.js 22+.

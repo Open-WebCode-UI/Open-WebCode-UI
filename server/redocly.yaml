@@ -1,0 +1,24 @@
+# Redocly configuration for the API documentation (openapi/openapi.yaml).
+#   npm run docs:lint    check the spec
+#   npm run docs:build   build openapi/dist/index.html (scripts/build-docs.mjs; web fonts are off and Redoc is bundled so it works offline), which the server shows at /api/docs to people holding api.docs.read
+apis:
+  main:
+    root: openapi/openapi.yaml
+    theme:
+      openapi:
+        expandResponses: '200,201'
+        pathInMiddlePanel: true
+        theme:
+          typography:
+            fontFamily: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif
+            headings:
+              fontFamily: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif
+            code:
+              fontFamily: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
+
+extends:
+  - recommended
+
+rules:
+  # The server's address is wherever the reader opened the docs, so the spec uses a relative server URL.
+  info-license: off

@@ -1,0 +1,635 @@
+openapi: 3.1.0
+info:
+  title: Open WebCode UI API
+  version: 1.0.0
+  summary: Use this server as an AI provider, and manage the keys that allow it.
+  description: |
+    Besides calling AI providers, this server can **be** one. Programs that speak the OpenAI Chat Completions
+    protocol (SDKs, editors, scripts) can send requests to `/v1` and use any model an administrator has set up here.
+
+    ## Who can do what
+
+    Access is controlled by roles, like the rest of the application. An administrator gives people these permissions:
+
+    | Permission | Allows |
+    | --- | --- |
+    | `api.use` | Create, rename, restrict and delete **your own** API keys, and call `/v1` with them. |
+    | `api.docs.read` | Read this documentation. |
+    | `api.keys.read` | List **everyone's** API keys (never the secret). |
+    | `api.keys.write` | Revoke any API key. |
+    | `settings.read` / `settings.write` | See / change the API settings (turn the API on or off, limits). |
+
+    The built-in **api-user** role holds `api.use` and `api.docs.read`. Administrators hold every permission.
+
+    ## How a request is authorised
+
+    1. The API must be **turned on** by an administrator (it is off by default). While it is off, `/v1` answers `503`.
+    2. The request carries an API key: `Authorization: Bearer owui_...`.
+    3. The key must exist, not be expired, and belong to an enabled user.
+    4. That user must **currently** hold `api.use`. Permissions are checked on every request, so removing the
+       permission (or the role) from a user stops all of their keys immediately.
+    5. The model must be one the user may use: its connection and model are enabled, the connection's role
+       allow-list includes one of the user's roles, and the key itself is not restricted to other models.
+    6. The key must be within its rate limit.
+
+    A key never has more access than its owner. It cannot manage keys, change settings, or reach anything outside `/v1`.
+
+    ## Keys
+
+    * A key is shown **once**, when it is created. Only a hash is stored, so a lost key cannot be recovered: create a new one.
+    * Creating a key needs a recent multi-factor check (step-up), as with other sensitive changes.
+    * Keys can expire, and can be limited to chosen models.
+    * Usage is recorded under the key owner, as the `api` kind in the usage reports.
+
+    ## Errors
+
+    `/v1` answers errors in the OpenAI envelope: `{"error": {"message", "type", "code"}}`.
+    The key-management endpoints under `/api` answer `{"error": "<code>"}` with optional extra fields.
+
+    ## Quick start
+
+    ```sh
+    curl -sS "$BASE_URL/v1/chat/completions" \
+      -H "Authorization: Bearer $OWUI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"model": "My Provider/some-model", "messages": [{"role": "user", "content": "Hello"}]}'
+    ```
+
+    With the OpenAI SDKs, set the base URL to `$BASE_URL/v1` and the API key to your key.
+    Model names have the form `<connection name>/<model id>`; list them with `GET /v1/models`.
+servers:
+  - url: /
+    description: This server
+tags:
+  - name: Provider API
+    description: OpenAI-compatible endpoints. Authenticated with an API key.
+  - name: API keys
+    description: Manage your own API keys. Authenticated with your signed-in session.
+  - name: Administration
+    description: Manage everyone's keys and the API settings. Authenticated with your signed-in session.
+  - name: Documentation
+    description: This documentation.
+x-tagGroups:
+  - name: Using the API
+    tags: [Provider API]
+  - name: Managing access
+    tags: [API keys, Administration, Documentation]
+paths:
+  /v1/models:
+    get:
+      tags: [Provider API]
+      operationId: listModels
+      summary: List models
+      description: The models this key may call. Requires `api.use`.
+      security:
+        - apiKey: []
+      responses:
+        '200':
+          description: The models.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelList' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '403': { $ref: '#/components/responses/V1Forbidden' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '503': { $ref: '#/components/responses/V1Disabled' }
+  /v1/chat/completions:
+    post:
+      tags: [Provider API]
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      description: |
+        Sends the conversation to the chosen model and returns its reply, optionally as a stream of server-sent events.
+        Requires `api.use`.
+
+        Supported: text messages, `system`/`developer` instructions, client-defined `tools` and the `tool` role,
+        `stream`, `stream_options.include_usage`, `max_tokens`, `max_completion_tokens`, `temperature`.
+
+        Not supported: image/audio/file content parts (answered with `400 unsupported_content`) and `n` other than 1.
+        Other OpenAI parameters are accepted and ignored. `max_tokens` is capped at the model's configured limit.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatCompletionRequest' }
+            examples:
+              simple:
+                summary: A single question
+                value:
+                  model: My Provider/some-model
+                  messages:
+                    - { role: user, content: Hello }
+      responses:
+        '200':
+          description: 'The completion. With `stream: true` it is a `text/event-stream` of `chat.completion.chunk` objects ending with `data: [DONE]`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatCompletion' }
+            text/event-stream:
+              schema:
+                type: string
+                description: 'Lines of the form `data: {chat.completion.chunk}`, then `data: [DONE]`.'
+        '400': { $ref: '#/components/responses/V1BadRequest' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '403': { $ref: '#/components/responses/V1Forbidden' }
+        '404':
+          description: The model does not exist or this key may not use it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/V1Error' }
+        '413': { $ref: '#/components/responses/V1BadRequest' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '502':
+          description: The model's provider failed. Details are in the server log, not in the response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/V1Error' }
+        '503': { $ref: '#/components/responses/V1Disabled' }
+  /api/api-keys:
+    get:
+      tags: [API keys]
+      operationId: listMyApiKeys
+      summary: List your API keys
+      description: Requires `api.use`. Secrets are never returned.
+      security:
+        - session: []
+      responses:
+        '200':
+          description: Your keys and the limits that apply to them.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, maxKeys, maxKeyDays, rateLimitPerMin, keys]
+                properties:
+                  enabled: { type: boolean, description: Whether the API is turned on. Keys exist and can be managed either way. }
+                  maxKeys: { type: integer, description: How many keys one user may have. }
+                  maxKeyDays: { type: integer, description: The longest allowed lifetime of a new key in days; 0 means keys may be created without an expiry. }
+                  rateLimitPerMin: { type: integer, description: 'Requests per minute, per key.' }
+                  keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [API keys]
+      operationId: createApiKey
+      summary: Create an API key
+      description: |
+        Requires `api.use` and a recent multi-factor check (`403 mfa_required` otherwise).
+        The response contains the key itself in `key`. **This is the only time it is shown.**
+      security:
+        - session: []
+          csrf: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiKeyCreate' }
+      responses:
+        '201':
+          description: The new key, including its secret.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyCreated' }
+        '400':
+          description: Invalid input, a model the key cannot be limited to (`model_unavailable`), or an expiry is required or too long (`expiry_required`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: You already have the maximum number of keys (`key_limit`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/api-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/KeyId'
+    put:
+      tags: [API keys]
+      operationId: updateApiKey
+      summary: Rename or re-scope your API key
+      description: Requires `api.use`. The secret and the expiry cannot change; create a new key for that.
+      security:
+        - session: []
+          csrf: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                modelIds:
+                  type: [array, 'null']
+                  items: { type: integer }
+                  description: Limit the key to these model ids. `null` allows every model the owner may use.
+      responses:
+        '200':
+          description: The updated key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '400':
+          description: Invalid input.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [API keys]
+      operationId: deleteApiKey
+      summary: Delete your API key
+      description: Requires `api.use`. The key stops working immediately.
+      security:
+        - session: []
+          csrf: []
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/api-keys:
+    get:
+      tags: [Administration]
+      operationId: listAllApiKeys
+      summary: List everyone's API keys
+      description: Requires `api.keys.read`. Secrets are never returned.
+      security:
+        - session: []
+      responses:
+        '200':
+          description: Every key, with its owner.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/admin/api-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/KeyId'
+    delete:
+      tags: [Administration]
+      operationId: revokeApiKey
+      summary: Revoke any API key
+      description: Requires `api.keys.write`. The key stops working immediately; the action is recorded in the audit log.
+      security:
+        - session: []
+          csrf: []
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/api-settings:
+    get:
+      tags: [Administration]
+      operationId: getApiSettings
+      summary: Read the API settings
+      description: Requires `settings.read`.
+      security:
+        - session: []
+      responses:
+        '200':
+          description: The settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSettings' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Administration]
+      operationId: updateApiSettings
+      summary: Change the API settings
+      description: Requires `settings.write` and a recent multi-factor check. Fields left out keep their value. The change is recorded in the audit log.
+      security:
+        - session: []
+          csrf: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSettings' }
+      responses:
+        '200':
+          description: The settings now in force.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSettings' }
+        '400':
+          description: Invalid input.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/docs:
+    get:
+      tags: [Documentation]
+      operationId: viewDocs
+      summary: View this documentation
+      description: Requires `api.docs.read`. Answers `503 docs_not_built` if the documentation has not been built (`npm run docs:build`).
+      security:
+        - session: []
+      responses:
+        '200':
+          description: The documentation page.
+          content:
+            text/html:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: The documentation has not been built.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/docs/openapi.yaml:
+    get:
+      tags: [Documentation]
+      operationId: downloadSpec
+      summary: Download the OpenAPI description
+      description: Requires `api.docs.read`.
+      security:
+        - session: []
+      responses:
+        '200':
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: owui_...
+      description: An API key created under `/api/api-keys`. Its owner must hold `api.use`.
+    session:
+      type: apiKey
+      in: cookie
+      name: sid
+      description: The browser session cookie from signing in (`__Host-sid` over HTTPS).
+    csrf:
+      type: apiKey
+      in: header
+      name: x-csrf-token
+      description: The session's CSRF token. Required with the session on every request that changes data.
+  parameters:
+    KeyId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+      description: The key's id (not the secret).
+  responses:
+    Ok:
+      description: Done.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean, const: true }
+    Unauthenticated:
+      description: Not signed in (`unauthenticated`), or sign-in is not finished (`mfa_incomplete`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: The permission named in `permission` is missing (`forbidden`), a recent multi-factor check is needed (`mfa_required`), or the CSRF token is wrong (`csrf`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such key, or it belongs to someone else.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    V1BadRequest:
+      description: The request is invalid (`validation_error`, `invalid_json`, `unsupported_content`, `unsupported_n`, `invalid_tool_arguments`, `invalid_tool_message`, `too_large`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/V1Error' }
+    V1Unauthorized:
+      description: The key is missing, unknown, expired, or its owner is disabled (`invalid_api_key`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/V1Error' }
+    V1Forbidden:
+      description: The key's owner no longer holds `api.use` (`forbidden`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/V1Error' }
+    V1RateLimited:
+      description: Too many requests for this key, or too many failed attempts from this address (`rate_limited`). `Retry-After` gives the wait in seconds.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/V1Error' }
+    V1Disabled:
+      description: An administrator has turned the API off (`api_disabled`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/V1Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: A short code such as `forbidden` or `not_found`. }
+      additionalProperties: true
+    V1Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message: { type: string }
+            type: { type: string, examples: [authentication_error] }
+            code: { type: [string, 'null'] }
+    ApiKey:
+      type: object
+      required: [id, name, prefix, modelIds, expiresAt, lastUsedAt, createdAt, expired]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        prefix: { type: string, description: 'The first characters of the key, to recognise it in a list.' }
+        modelIds:
+          type: [array, 'null']
+          items: { type: integer }
+          description: Models the key is limited to; `null` means every model its owner may use.
+        expiresAt: { type: [integer, 'null'], description: 'Unix time, or null for no expiry.' }
+        lastUsedAt: { type: [integer, 'null'], description: Unix time of the last request (updated at most once a minute). }
+        createdAt: { type: integer }
+        expired: { type: boolean }
+        owner:
+          type: object
+          description: Present in the administrator listing only.
+          properties:
+            id: { type: integer }
+            name: { type: string }
+    ApiKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, examples: [CI server] }
+        modelIds:
+          type: [array, 'null']
+          items: { type: integer }
+          description: Limit the key to these model ids. Omit or `null` for every model the owner may use.
+        expiresInDays:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 3650
+          description: Lifetime in days. Required when the administrator has set a maximum.
+    ApiKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [key]
+          properties:
+            key: { type: string, description: 'The secret. Shown only in this response.', examples: [owui_AbC...] }
+    ApiSettings:
+      type: object
+      properties:
+        enabled: { type: boolean, description: Turns `/v1` on or off. Off by default. }
+        maxKeysPerUser: { type: integer, minimum: 1, maximum: 100 }
+        rateLimitPerMin: { type: integer, minimum: 1, maximum: 100000, description: 'Requests per minute, per key.' }
+        maxKeyDays: { type: integer, minimum: 0, maximum: 3650, description: Longest allowed key lifetime in days; 0 allows keys that never expire. }
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object: { type: string, const: list }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Model' }
+    Model:
+      type: object
+      required: [id, object, created, owned_by]
+      properties:
+        id: { type: string, description: 'The name to send as `model`: `<connection name>/<model id>`.', examples: [My Provider/some-model] }
+        object: { type: string, const: model }
+        created: { type: integer }
+        owned_by: { type: string, description: The connection's name. }
+    ChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role: { type: string, enum: [system, developer, user, assistant, tool] }
+        content:
+          description: 'Text, or an array of `{"type": "text", "text": "..."}` parts. May be null on an assistant message that only calls tools.'
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                required: [type, text]
+                properties:
+                  type: { type: string, const: text }
+                  text: { type: string }
+            - type: 'null'
+        tool_calls:
+          type: array
+          description: On an assistant message, the tool calls it made.
+          items: { $ref: '#/components/schemas/ToolCall' }
+        tool_call_id:
+          type: string
+          description: On a `tool` message, the id of the call it answers. Required for that role.
+    ToolCall:
+      type: object
+      required: [id, function]
+      properties:
+        id: { type: string }
+        type: { type: string, const: function }
+        function:
+          type: object
+          required: [name, arguments]
+          properties:
+            name: { type: string }
+            arguments: { type: string, description: The arguments as a JSON string. }
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model: { type: string, description: 'As listed by `GET /v1/models`.', examples: [My Provider/some-model] }
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items: { $ref: '#/components/schemas/ChatMessage' }
+        stream: { type: boolean, default: false }
+        stream_options:
+          type: object
+          properties:
+            include_usage: { type: boolean, description: Send a final chunk with token usage. }
+        max_tokens: { type: integer, minimum: 1, description: Capped at the model's configured limit. }
+        max_completion_tokens: { type: integer, minimum: 1, description: Takes precedence over `max_tokens`. }
+        temperature: { type: number, minimum: 0, maximum: 2, description: Defaults to the model's configured value. }
+        n: { type: integer, const: 1 }
+        tools:
+          type: array
+          maxItems: 128
+          description: Functions the model may ask you to run. This server never runs them; you do, and send the result back as a `tool` message.
+          items:
+            type: object
+            required: [type, function]
+            properties:
+              type: { type: string, const: function }
+              function:
+                type: object
+                required: [name]
+                properties:
+                  name: { type: string }
+                  description: { type: string }
+                  parameters: { type: object, description: A JSON Schema for the arguments. }
+    ChatCompletion:
+      type: object
+      required: [id, object, created, model, choices, usage]
+      properties:
+        id: { type: string }
+        object: { type: string, const: chat.completion }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            required: [index, message, finish_reason]
+            properties:
+              index: { type: integer }
+              finish_reason: { type: string, enum: [stop, length, tool_calls] }
+              message:
+                type: object
+                required: [role, content]
+                properties:
+                  role: { type: string, const: assistant }
+                  content: { type: [string, 'null'] }
+                  tool_calls:
+                    type: array
+                    items: { $ref: '#/components/schemas/ToolCall' }
+        usage:
+          type: object
+          required: [prompt_tokens, completion_tokens, total_tokens]
+          properties:
+            prompt_tokens: { type: integer }
+            completion_tokens: { type: integer }
+            total_tokens: { type: integer }

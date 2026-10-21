@@ -53,5 +53,9 @@ export const PERMISSION_TEXT = {
   'mfa.reset': ['Administration', "Reset another user's MFA"],
   'audit.read': ['Administration', 'Read the audit log'],
   'report.read': ['Administration', 'View usage and cost reports'],
+  'api.use': ['API', 'Create your own API keys and call this server as an AI provider'],
+  'api.docs.read': ['API', 'Read the API documentation'],
+  'api.keys.read': ['Administration', "View everyone's API keys (never the secret)"],
+  'api.keys.write': ['Administration', 'Revoke any API key'],
   'spend.view': ['Usage', 'View own session spend and token estimates'],
 };
