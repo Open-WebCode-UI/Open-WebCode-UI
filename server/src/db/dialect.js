@@ -24,6 +24,9 @@ export function nowEpoch(knex) {
   }
 }
 
+/** nowEpoch() as a column DEFAULT (parenthesised, which SQLite and MariaDB require for expressions). */
+export const nowDefault = (knex) => knex.raw(`(${nowEpoch(knex).toQuery()})`);
+
 /** 'YYYY-MM-DD' (UTC) of an epoch-seconds column. */
 export function dayOf(knex, col) {
   switch (engineOf(knex)) {
