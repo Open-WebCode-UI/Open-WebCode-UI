@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createKnex } from './knex.js';
 import { ALL_PERMISSIONS, BUILTIN_ROLES } from '../permissions.js';
 
 const schema = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'schema.sql'), 'utf8');
@@ -188,3 +189,9 @@ export function seedRoles(db) {
 export function initDb(file) { current = openDb(file); return current; }
 export function getDb() { if (!current) throw new Error('DB not initialized'); return current; }
 export function setDb(db) { current = db; }
+
+// Knex handle for the multi-engine layer. Call sites move from getDb() (better-sqlite3, SQLite only) to getKnex() file by file.
+let knex;
+export function initKnex(dbConfig) { knex = createKnex(dbConfig); return knex; }
+export function getKnex() { if (!knex) throw new Error('Knex not initialized'); return knex; }
+export function setKnex(k) { knex = k; }
