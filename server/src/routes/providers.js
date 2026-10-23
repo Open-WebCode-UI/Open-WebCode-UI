@@ -1,5 +1,6 @@
 import express from 'express';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx, insertId } from '../db/dialect.js';
 import { defineRoutes, fail, validate, z } from '../http.js';
 import { encrypt, maskSecret } from '../crypto.js';
 import { audit } from '../audit.js';
@@ -10,15 +11,18 @@ import { userRoleNames } from '../auth/rbac.js';
 import { THINKING_MODES, defaultThinking } from '../llm/thinking.js';
 import { badgesFor } from './badges.js';
 
-const dto = (p) => {
-  const db = getDb();
-  return {
-    id: p.id, name: p.name, type: p.type, enabled: !!p.enabled, config: JSON.parse(p.config), hasSecret: !!p.secret_enc, secret: maskSecret(p.secret_enc),
-    allowedRoles: JSON.parse(p.allowed_roles), helpText: p.help_text || '', fileUploads: !!p.file_uploads, imageUploads: !!p.image_uploads,
-    models: db.prepare('SELECT id, model_id modelId, label, enabled, max_tokens maxTokens, temperature, context_size contextSize, auto_context autoContext, thinking_mode thinkingMode, thinking_budget thinkingBudget, subagents, file_uploads fileUploads, image_uploads imageUploads, input_price inputPrice, output_price outputPrice, help_text helpText, featured_badge_id featuredBadgeId FROM models WHERE provider_id=? ORDER BY position, id').all(p.id)
-      .map((m) => ({ ...m, enabled: !!m.enabled, subagents: !!m.subagents, fileUploads: m.fileUploads == null ? null : !!m.fileUploads, imageUploads: m.imageUploads == null ? null : !!m.imageUploads, autoContext: !!m.autoContext, badgeIds: badgesFor(m.id).map((b) => b.id) })),
-  };
-};
+// The next display position in a table: one past the highest.
+const nextPosition = async (q) => ((await q.max({ m: 'position' }).first()).m ?? 0) + 1;
+
+const MODEL_COLS = ['id', 'model_id as modelId', 'label', 'enabled', 'max_tokens as maxTokens', 'temperature', 'context_size as contextSize', 'auto_context as autoContext',
+  'thinking_mode as thinkingMode', 'thinking_budget as thinkingBudget', 'subagents', 'file_uploads as fileUploads', 'image_uploads as imageUploads', 'input_price as inputPrice',
+  'output_price as outputPrice', 'help_text as helpText', 'featured_badge_id as featuredBadgeId'];
+const dto = async (p) => ({
+  id: p.id, name: p.name, type: p.type, enabled: !!p.enabled, config: JSON.parse(p.config), hasSecret: !!p.secret_enc, secret: maskSecret(p.secret_enc),
+  allowedRoles: JSON.parse(p.allowed_roles), helpText: p.help_text || '', fileUploads: !!p.file_uploads, imageUploads: !!p.image_uploads,
+  models: await Promise.all((await getKnex()('models').where({ provider_id: p.id }).select(MODEL_COLS).orderBy([{ column: 'position' }, { column: 'id' }]))
+    .map(async (m) => ({ ...m, enabled: !!m.enabled, subagents: !!m.subagents, fileUploads: m.fileUploads == null ? null : !!m.fileUploads, imageUploads: m.imageUploads == null ? null : !!m.imageUploads, autoContext: !!m.autoContext, badgeIds: (await badgesFor(m.id)).map((b) => b.id) }))),
+});
 const cfgSchema = z.object({
   baseUrl: z.string().max(500).optional(), region: z.string().max(50).optional(),
   deployment: z.string().max(200).optional(), project: z.string().max(100).optional(), location: z.string().max(50).optional(), apiVersion: z.string().max(50).optional(),
@@ -56,49 +60,54 @@ async function probeThinking(adapterFactory, provider, modelId) {
 export function providersRouter({ adapterFactory = createAdapter, lookup } = {}) {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
-  const get = (id) => getDb().prepare('SELECT * FROM providers WHERE id=?').get(id) || fail(404, 'not_found');
+  const intId = (v) => { const n = Number(v); return Number.isInteger(n) ? n : fail(404, 'not_found'); };
+  const get = async (id) => (await getKnex()('providers').where({ id: intId(id) }).first()) || fail(404, 'not_found');
 
-  route.get('/admin/providers', 'provider.read', (_req, res) => res.json(getDb().prepare('SELECT * FROM providers ORDER BY position, id').all().map(dto)));
+  route.get('/admin/providers', 'provider.read', async (_req, res) => res.json(await Promise.all((await getKnex()('providers').orderBy([{ column: 'position' }, { column: 'id' }])).map(dto))));
   route.post('/admin/providers', { perm: 'provider.write', stepup: true }, async (req, res) => {
     const b = validate(body, req.body);
     await checkProviderUrl(b.type, b.config, lookup);
-    const id = Number(getDb().prepare('INSERT INTO providers (name,type,config,secret_enc,enabled,allowed_roles,help_text,file_uploads,image_uploads) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(b.name, b.type, JSON.stringify(b.config), b.secret ? encrypt(b.secret) : null, +b.enabled, JSON.stringify(b.allowedRoles), b.helpText ?? '', +(b.fileUploads ?? false), +(b.imageUploads ?? false)).lastInsertRowid);
-    getDb().prepare('UPDATE providers SET position=(SELECT COALESCE(MAX(position),0)+1 FROM providers) WHERE id=?').run(id); // new connections go last
+    const id = await trx(getKnex(), async (t) => insertId(t('providers'), {
+      name: b.name, type: b.type, config: JSON.stringify(b.config), secret_enc: b.secret ? encrypt(b.secret) : null, enabled: +b.enabled, allowed_roles: JSON.stringify(b.allowedRoles),
+      help_text: b.helpText ?? '', file_uploads: +(b.fileUploads ?? false), image_uploads: +(b.imageUploads ?? false), position: await nextPosition(t('providers')), // new connections go last
+    }));
     audit(req.user.id, 'provider.create', b.name, { type: b.type });
-    res.status(201).json(dto(get(id)));
+    res.status(201).json(await dto(await get(id)));
   });
   // Reorder: the body lists every id in the new order. Registered before '/:id' so "order" is never read as an id.
-  const reorder = (table, where, args, ids) => {
-    const cur = getDb().prepare(`SELECT id FROM ${table} WHERE ${where}`).all(...args).map((x) => x.id);
+  const reorder = async (table, where, ids) => {
+    const cur = (await getKnex()(table).where(where).select('id')).map((x) => x.id);
     if (ids.length !== cur.length || new Set(ids).size !== ids.length || !ids.every((i) => cur.includes(i))) fail(400, 'order_mismatch', { message: 'The list must contain every item exactly once.' });
-    const set = getDb().prepare(`UPDATE ${table} SET position=? WHERE id=?`);
-    getDb().transaction(() => ids.forEach((id, i) => set.run(i + 1, id)))();
+    await trx(getKnex(), async (t) => { for (const [i, id] of ids.entries()) await t(table).where({ id }).update({ position: i + 1 }); });
   };
   const orderBody = z.object({ ids: z.array(z.number().int()).max(1000) });
-  route.put('/admin/providers/order', 'provider.write', (req, res) => {
+  route.put('/admin/providers/order', 'provider.write', async (req, res) => {
     const { ids } = validate(orderBody, req.body);
-    reorder('providers', '1=1', [], ids);
+    await reorder('providers', {}, ids);
     audit(req.user.id, 'provider.reorder', null, { ids });
     res.json({ ok: true });
   });
-  route.put('/admin/providers/:id/models/order', 'provider.write', (req, res) => {
-    const p = get(req.params.id), { ids } = validate(orderBody, req.body);
-    reorder('models', 'provider_id=?', [p.id], ids);
+  route.put('/admin/providers/:id/models/order', 'provider.write', async (req, res) => {
+    const p = await get(req.params.id), { ids } = validate(orderBody, req.body);
+    await reorder('models', { provider_id: p.id }, ids);
     audit(req.user.id, 'provider.models.reorder', p.name, { ids });
     res.json({ ok: true });
   });
   route.put('/admin/providers/:id', { perm: 'provider.write', stepup: true }, async (req, res) => {
-    const p = get(req.params.id), b = validate(body, req.body);
+    const p = await get(req.params.id), b = validate(body, req.body);
     await checkProviderUrl(b.type, b.config, lookup);
-    getDb().prepare('UPDATE providers SET name=?, type=?, config=?, secret_enc=COALESCE(?,secret_enc), enabled=?, allowed_roles=?, help_text=COALESCE(?,help_text), file_uploads=COALESCE(?,file_uploads), image_uploads=COALESCE(?,image_uploads) WHERE id=?')
-      .run(b.name, b.type, JSON.stringify(b.config), b.secret ? encrypt(b.secret) : null, +b.enabled, JSON.stringify(b.allowedRoles), b.helpText ?? null, b.fileUploads === undefined ? null : +b.fileUploads, b.imageUploads === undefined ? null : +b.imageUploads, p.id);
+    // Secret, help text and the upload defaults are kept when the request leaves them out.
+    await getKnex()('providers').where({ id: p.id }).update({
+      name: b.name, type: b.type, config: JSON.stringify(b.config), enabled: +b.enabled, allowed_roles: JSON.stringify(b.allowedRoles),
+      ...(b.secret && { secret_enc: encrypt(b.secret) }), ...(b.helpText != null && { help_text: b.helpText }),
+      ...(b.fileUploads !== undefined && { file_uploads: +b.fileUploads }), ...(b.imageUploads !== undefined && { image_uploads: +b.imageUploads }),
+    });
     audit(req.user.id, 'provider.update', b.name, { secretChanged: !!b.secret, helpTextChanged: b.helpText !== undefined && b.helpText !== (p.help_text || '') });
-    res.json(dto(get(p.id)));
+    res.json(await dto(await get(p.id)));
   });
-  route.delete('/admin/providers/:id', { perm: 'provider.write', stepup: true }, (req, res) => {
-    const p = get(req.params.id);
-    getDb().prepare('DELETE FROM providers WHERE id=?').run(p.id);
+  route.delete('/admin/providers/:id', { perm: 'provider.write', stepup: true }, async (req, res) => {
+    const p = await get(req.params.id);
+    await getKnex()('providers').where({ id: p.id }).del();
     audit(req.user.id, 'provider.delete', p.name);
     res.json({ ok: true });
   });
@@ -109,7 +118,7 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
     await checkProviderUrl(b.type, b.config, lookup);
     let secretEnc = b.secret ? encrypt(b.secret) : null;
     if (!secretEnc && b.providerId) {
-      const stored = get(b.providerId), sc = JSON.parse(stored.config);
+      const stored = await get(b.providerId), sc = JSON.parse(stored.config);
       const same = stored.type === b.type && ['baseUrl', 'region', 'deployment', 'apiVersion', 'project', 'location'].every((k) => (sc[k] || '') === (b.config[k] || ''));
       if (!same) fail(400, 'secret_required', { message: 'Re-enter the API key to query a changed endpoint.' });
       secretEnc = stored.secret_enc;
@@ -126,15 +135,15 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
     }
   });
   route.post('/admin/providers/:id/test', 'provider.write', async (req, res) => {
-    const p = get(req.params.id);
+    const p = await get(req.params.id);
     try {
       const a = adapterFactory(p);
       const models = await a.listModels();
       res.json({ ok: true, models });
     } catch (e) { res.json({ ok: false, error: String(e.message).slice(0, 300) }); }
   });
-  route.post('/admin/providers/:id/models', 'provider.write', (req, res) => {
-    const p = get(req.params.id);
+  route.post('/admin/providers/:id/models', 'provider.write', async (req, res) => {
+    const p = await get(req.params.id);
     const b = validate(z.object({
       modelId: z.string().min(1).max(300), label: z.string().max(100).optional(), maxTokens: z.number().int().min(1).max(5_000_000).default(4096),
       temperature: z.number().min(0).max(2).nullable().default(null), contextSize: z.number().int().min(1000).max(10_000_000).nullable().default(null), enabled: z.boolean().default(true),
@@ -145,21 +154,34 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
     const dflt = defaultThinking(p.type, b.modelId); // suggested for new rows; an explicit choice (or an existing row's setting) wins
     const mode = b.thinkingMode ?? dflt.mode;
     const budget = mode === 'budget' ? (b.thinkingBudget ?? dflt.budget ?? 8000) : null;
-    getDb().prepare(`INSERT INTO models (provider_id, model_id, label, enabled, max_tokens, temperature, context_size, auto_context, thinking_mode, thinking_budget, subagents, file_uploads, image_uploads, input_price, output_price, help_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(provider_id, model_id) DO UPDATE SET label=excluded.label, enabled=excluded.enabled, max_tokens=excluded.max_tokens, temperature=excluded.temperature, context_size=excluded.context_size,
-        thinking_mode=CASE WHEN ? THEN excluded.thinking_mode ELSE thinking_mode END, thinking_budget=CASE WHEN ? THEN excluded.thinking_budget ELSE thinking_budget END,
-        auto_context=CASE WHEN ? THEN excluded.auto_context ELSE auto_context END,
-        subagents=CASE WHEN ? THEN excluded.subagents ELSE subagents END,
-        file_uploads=CASE WHEN ? THEN excluded.file_uploads ELSE file_uploads END, image_uploads=CASE WHEN ? THEN excluded.image_uploads ELSE image_uploads END,
-        input_price=CASE WHEN ? THEN excluded.input_price ELSE input_price END, output_price=CASE WHEN ? THEN excluded.output_price ELSE output_price END,
-        help_text=CASE WHEN ? THEN excluded.help_text ELSE help_text END`)
-      .run(p.id, b.modelId, b.label || b.modelId, +b.enabled, b.maxTokens, b.temperature, b.contextSize, +(b.autoContext ?? false), mode, budget, +(b.subagents ?? true), b.fileUploads == null ? null : +b.fileUploads, b.imageUploads == null ? null : +b.imageUploads, b.inputPrice ?? null, b.outputPrice ?? null, b.helpText ?? '', +(b.thinkingMode !== undefined), +(b.thinkingMode !== undefined), +(b.autoContext !== undefined), +(b.subagents !== undefined), +(b.fileUploads !== undefined), +(b.imageUploads !== undefined), +(b.inputPrice !== undefined), +(b.outputPrice !== undefined), +(b.helpText !== undefined));
-    getDb().prepare('UPDATE models SET position=(SELECT COALESCE(MAX(position),0)+1 FROM models WHERE provider_id=?) WHERE provider_id=? AND model_id=? AND position=0').run(p.id, p.id, b.modelId); // new models go last
+    // Adding a model that already exists updates it. Only the settings the request names are changed (the rest keep their values).
+    const sent = (v) => v !== undefined;
+    const fields = {
+      label: b.label || b.modelId, enabled: +b.enabled, max_tokens: b.maxTokens, temperature: b.temperature, context_size: b.contextSize,
+      ...(sent(b.thinkingMode) && { thinking_mode: mode, thinking_budget: budget }), ...(sent(b.autoContext) && { auto_context: +b.autoContext }),
+      ...(sent(b.subagents) && { subagents: +b.subagents }),
+      ...(sent(b.fileUploads) && { file_uploads: b.fileUploads == null ? null : +b.fileUploads }), ...(sent(b.imageUploads) && { image_uploads: b.imageUploads == null ? null : +b.imageUploads }),
+      ...(sent(b.inputPrice) && { input_price: b.inputPrice ?? null }), ...(sent(b.outputPrice) && { output_price: b.outputPrice ?? null }),
+      ...(sent(b.helpText) && { help_text: b.helpText ?? '' }),
+    };
+    await trx(getKnex(), async (t) => {
+      const existing = await t('models').where({ provider_id: p.id, model_id: b.modelId }).first('id', 'position');
+      if (existing) {
+        await t('models').where({ id: existing.id }).update({ ...fields, ...(existing.position === 0 && { position: await nextPosition(t('models').where({ provider_id: p.id })) }) });
+      } else {
+        await t('models').insert({
+          provider_id: p.id, model_id: b.modelId, thinking_mode: mode, thinking_budget: budget, auto_context: +(b.autoContext ?? false), subagents: +(b.subagents ?? true),
+          file_uploads: b.fileUploads == null ? null : +b.fileUploads, image_uploads: b.imageUploads == null ? null : +b.imageUploads,
+          input_price: b.inputPrice ?? null, output_price: b.outputPrice ?? null, help_text: b.helpText ?? '', ...fields,
+          position: await nextPosition(t('models').where({ provider_id: p.id })), // new models go last
+        });
+      }
+    });
     audit(req.user.id, 'provider.model.upsert', p.name, { model: b.modelId, enabled: b.enabled, ...(b.inputPrice !== undefined || b.outputPrice !== undefined ? { inputPrice: b.inputPrice, outputPrice: b.outputPrice } : {}) });
-    res.json(dto(get(p.id)));
+    res.json(await dto(await get(p.id)));
   });
-  route.delete('/admin/models/:id', 'provider.write', (req, res) => {
-    getDb().prepare('DELETE FROM models WHERE id=?').run(req.params.id);
+  route.delete('/admin/models/:id', 'provider.write', async (req, res) => {
+    await getKnex()('models').where({ id: intId(req.params.id) }).del();
     audit(req.user.id, 'provider.model.delete', req.params.id);
     res.json({ ok: true });
   });
@@ -173,14 +195,18 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
   // Models the current user may use (enabled provider + enabled model + role allow-list).
   route.get('/models', 'provider.use', async (req, res) => {
     const roles = userRoleNames(req.user.id);
-    const rows = getDb().prepare(`SELECT m.id, m.model_id modelId, COALESCE(m.label,m.model_id) label, p.name provider, p.allowed_roles ar, m.thinking_mode tm, m.file_uploads mf, m.image_uploads mi, p.file_uploads pf, p.image_uploads pi, m.context_size contextSize, m.auto_context autoContext, m.max_tokens maxTokens, m.input_price inputPrice, m.output_price outputPrice, m.featured_badge_id featuredBadgeId, p.help_text help, m.help_text modelHelp, p.id pid, p.type ptype, p.config pconfig, p.secret_enc psecret
-      FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.enabled=1 AND p.enabled=1 ORDER BY p.position, p.id, m.position, m.id`).all()
+    const rows = (await getKnex()('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.enabled': 1, 'p.enabled': 1 })
+      .orderBy([{ column: 'p.position' }, { column: 'p.id' }, { column: 'm.position' }, { column: 'm.id' }])
+      .select('m.id', 'm.model_id as modelId', getKnex().raw('COALESCE(m.label, m.model_id) as label'), 'p.name as provider', 'p.allowed_roles as ar', 'm.thinking_mode as tm',
+        'm.file_uploads as mf', 'm.image_uploads as mi', 'p.file_uploads as pf', 'p.image_uploads as pi', 'm.context_size as contextSize', 'm.auto_context as autoContext',
+        'm.max_tokens as maxTokens', 'm.input_price as inputPrice', 'm.output_price as outputPrice', 'm.featured_badge_id as featuredBadgeId', 'p.help_text as help',
+        'm.help_text as modelHelp', 'p.id as pid', 'p.type as ptype', 'p.config as pconfig', 'p.secret_enc as psecret'))
       .filter((m) => { const ar = JSON.parse(m.ar); return !ar.length || ar.some((x) => roles.includes(x)); });
     // thinkingCapable: what the provider reports (null = unknown). Only models that could think (admin-enabled) are probed.
     const capable = await Promise.all(rows.map((m) => m.tm === 'off' ? null : probeThinking(adapterFactory, { id: m.pid, type: m.ptype, config: m.pconfig, secret_enc: m.psecret }, m.modelId)));
     const showPricing = getSettings('general').showModelPricing; // prices are admin-entered; users only see them when this is on
     res.json({
-      models: rows.map(({ ar, tm, mf, mi, pf, pi, pid, ptype, pconfig, psecret, inputPrice, outputPrice, ...m }, i) => ({ ...m, autoContext: !!m.autoContext, contextSize: m.autoContext ? null : m.contextSize, ...(showPricing ? { inputPrice, outputPrice } : {}), supportsThinking: tm !== 'off' && capable[i] !== false, thinkingCapable: capable[i], supportsFiles: !!(mf ?? pf), supportsImages: !!(mi ?? pi), badges: badgesFor(m.id) })),
+      models: await Promise.all(rows.map(async ({ ar, tm, mf, mi, pf, pi, pid, ptype, pconfig, psecret, inputPrice, outputPrice, ...m }, i) => ({ ...m, autoContext: !!m.autoContext, contextSize: m.autoContext ? null : m.contextSize, ...(showPricing ? { inputPrice, outputPrice } : {}), supportsThinking: tm !== 'off' && capable[i] !== false, thinkingCapable: capable[i], supportsFiles: !!(mf ?? pf), supportsImages: !!(mi ?? pi), badges: await badgesFor(m.id) }))),
       defaults: getSettings('general').defaultModels,
     });
   });
@@ -190,11 +216,12 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
 // What a model accepts: its own switch when set, otherwise its connection's.
 export const uploadCaps = ({ model, provider }) => ({ files: !!(model.file_uploads ?? provider.file_uploads), images: !!(model.image_uploads ?? provider.image_uploads) });
 
-export function resolveModel(user, modelRowId) {
+export async function resolveModel(user, modelRowId) {
   const roles = userRoleNames(user.id);
-  const row = getDb().prepare(`SELECT m.*, p.id pid FROM models m JOIN providers p ON p.id=m.provider_id WHERE m.id=? AND m.enabled=1 AND p.enabled=1`).get(modelRowId);
+  const k = getKnex();
+  const row = await k('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.id': modelRowId, 'm.enabled': 1, 'p.enabled': 1 }).first('m.*', 'p.id as pid');
   if (!row) return null;
-  const p = getDb().prepare('SELECT * FROM providers WHERE id=?').get(row.pid);
+  const p = await k('providers').where({ id: row.pid }).first();
   const ar = JSON.parse(p.allowed_roles);
   if (ar.length && !ar.some((x) => roles.includes(x))) return null;
   return { model: row, provider: p };

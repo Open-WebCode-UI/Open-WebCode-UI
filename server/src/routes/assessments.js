@@ -98,17 +98,17 @@ export function assessmentsRouter() {
     audit(req.user.id, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title });
     res.json({ ok: true });
   });
-  route.post('/courses/:id/assessments/:aid/questions', 'course.author', (req, res) => {
+  route.post('/courses/:id/assessments/:aid/questions', 'course.author', async (req, res) => {
     const c = authorCourse(req); const a = getAssessment(req, c.id); lockIfAttempted(a.id);
-    const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
+    const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') await checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
     const pos = (db().prepare('SELECT MAX(position) m FROM questions WHERE assessment_id=?').get(a.id).m ?? -1) + 1;
     const id = Number(db().prepare('INSERT INTO questions (assessment_id, position, type, prompt, options_json, answer_key_json, points, code_spec_json) VALUES (?,?,?,?,?,?,?,?)').run(a.id, pos, b.type, b.prompt, s.options, s.key, s.points, s.spec).lastInsertRowid);
     res.status(201).json(authorQuestion(db().prepare('SELECT * FROM questions WHERE id=?').get(id)));
   });
   const getQuestion = (req, aid) => db().prepare('SELECT * FROM questions WHERE id=? AND assessment_id=?').get(req.params.qid, aid) || fail(404, 'question_not_found');
-  route.put('/courses/:id/assessments/:aid/questions/:qid', 'course.author', (req, res) => {
+  route.put('/courses/:id/assessments/:aid/questions/:qid', 'course.author', async (req, res) => {
     const c = authorCourse(req); const a = getAssessment(req, c.id); lockIfAttempted(a.id); const q = getQuestion(req, a.id);
-    const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
+    const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') await checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
     db().prepare('UPDATE questions SET type=?, prompt=?, options_json=?, answer_key_json=?, points=?, code_spec_json=? WHERE id=?').run(b.type, b.prompt, s.options, s.key, s.points, s.spec, q.id);
     res.json(authorQuestion(db().prepare('SELECT * FROM questions WHERE id=?').get(q.id)));
   });

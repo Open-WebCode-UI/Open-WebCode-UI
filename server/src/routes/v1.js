@@ -105,7 +105,7 @@ export function v1Router({ adapterFactory = createAdapter } = {}) {
     const b = validate(chatBody, req.body);
     if (b.n !== undefined && b.n !== 1) fail(400, 'unsupported_n', { message: 'Only n=1 is supported.' });
     const row = usableModels(req.apiUser, req.apiKey).find((m) => publicId(m.provider, m.model_id) === b.model);
-    const rm = row && resolveModel(req.apiUser, row.id);
+    const rm = row && await resolveModel(req.apiUser, row.id);
     if (!rm) fail(404, 'model_not_found', { message: `The model "${b.model}" does not exist or you do not have access to it.` });
     const { system, messages } = toNeutral(b.messages);
     const tools = (b.tools || []).map((t) => ({ name: t.function.name, description: t.function.description || '', parameters: t.function.parameters || { type: 'object', properties: {} } }));

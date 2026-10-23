@@ -111,7 +111,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
     const projectId = req.query.projectId === undefined ? null : Number(req.query.projectId);
     if (projectId !== null && !Number.isInteger(projectId)) fail(400, 'invalid_project');
     const project = projectId === null ? null : getProject({ params: { id: projectId }, user: req.user });
-    const rm = resolveModel(req.user, getSettings('general').defaultModels.plan);
+    const rm = await resolveModel(req.user, getSettings('general').defaultModels.plan);
     res.json(await buildStatus({ req, project, rm, adapter: rm ? adapterFactory(rm.provider) : null }));
   });
 
@@ -173,7 +173,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
           if (scope.policy.maxCost && used.cost >= scope.policy.maxCost) deny(429, 'exercise_budget_exceeded', 'cost');
         }
       }
-      const rm = resolveModel(req.user, effectiveCourseModelId(scope?.policy.modelId) ?? b.modelId ?? general.defaultModels[b.mode]);
+      const rm = await resolveModel(req.user, effectiveCourseModelId(scope?.policy.modelId) ?? b.modelId ?? general.defaultModels[b.mode]);
       // /status needs no conversation (and works even with no model set up): connection, server, user, and project.
       if (STATUS_RE.test(b.message.trim())) {
         const emit = sse(res);
@@ -304,7 +304,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         if (!courseId) fail(400, 'course_required');
         if (!designableCourses(req.user.id, { all: allPerms.has('course.admin') }).some((c) => c.id === courseId)) fail(404, 'course_not_found');
       }
-      const rm = resolveModel(req.user, b.modelId ?? getSettings('general').defaultModels.chat);
+      const rm = await resolveModel(req.user, b.modelId ?? getSettings('general').defaultModels.chat);
       if (STATUS_RE.test(b.message.trim())) {
         const emit = sse(res);
         emit({ type: 'status', ...(await buildStatus({ req, rm, adapter: rm ? adapterFactory(rm.provider) : null })) });

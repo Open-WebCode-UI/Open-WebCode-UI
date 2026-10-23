@@ -22,26 +22,26 @@ export function apiKeysRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
   const own = (req) => getDb().prepare('SELECT * FROM api_keys WHERE id=? AND user_id=?').get(req.params.id, req.user.id) || fail(404, 'not_found');
-  const checkModels = (user, ids) => { for (const id of ids ?? []) if (!resolveModel(user, id)) fail(400, 'model_unavailable', { modelId: id }); };
+  const checkModels = async (user, ids) => { for (const id of ids ?? []) if (!await resolveModel(user, id)) fail(400, 'model_unavailable', { modelId: id }); };
 
   route.get('/api-keys', 'api.use', (req, res) => {
     const s = getSettings('api');
     res.json({ enabled: s.enabled, maxKeys: s.maxKeysPerUser, maxKeyDays: s.maxKeyDays, rateLimitPerMin: s.rateLimitPerMin, keys: ownKeys(req.user.id) });
   });
   // Creating a key hands out standing access without a login, so it needs a recent MFA check (step-up) like other sensitive changes.
-  route.post('/api-keys', { perm: 'api.use', stepup: true }, (req, res) => {
+  route.post('/api-keys', { perm: 'api.use', stepup: true }, async (req, res) => {
     const b = validate(keyBody, req.body), s = getSettings('api');
     if (getDb().prepare('SELECT COUNT(*) c FROM api_keys WHERE user_id=?').get(req.user.id).c >= s.maxKeysPerUser) fail(409, 'key_limit', { max: s.maxKeysPerUser });
     if (s.maxKeyDays && (!b.expiresInDays || b.expiresInDays > s.maxKeyDays)) fail(400, 'expiry_required', { maxDays: s.maxKeyDays });
-    checkModels(req.user, b.modelIds);
+    await checkModels(req.user, b.modelIds);
     const { key, id } = createKey(req.user.id, { name: b.name, modelIds: b.modelIds ?? null, expiresAt: b.expiresInDays ? Math.floor(Date.now() / 1000) + b.expiresInDays * DAY : null });
     audit(req.user.id, 'apikey.create', b.name, { id });
     res.status(201).json({ ...keyDto(getDb().prepare('SELECT * FROM api_keys WHERE id=?').get(id)), key }); // the only time the secret is shown
   });
   // The secret and the expiry cannot change (create a new key instead); a key can be renamed and re-scoped.
-  route.put('/api-keys/:id', 'api.use', (req, res) => {
+  route.put('/api-keys/:id', 'api.use', async (req, res) => {
     const k = own(req), b = validate(keyBody.omit({ expiresInDays: true }), req.body);
-    checkModels(req.user, b.modelIds);
+    await checkModels(req.user, b.modelIds);
     getDb().prepare('UPDATE api_keys SET name=?, model_ids=? WHERE id=?').run(b.name, b.modelIds ? JSON.stringify(b.modelIds) : null, k.id);
     audit(req.user.id, 'apikey.update', b.name, { id: k.id });
     res.json(keyDto(getDb().prepare('SELECT * FROM api_keys WHERE id=?').get(k.id)));

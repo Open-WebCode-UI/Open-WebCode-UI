@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { createKnex } from './knex.js';
+import { createKnex, knexOnConnection } from './knex.js';
 import { legacySchema, legacyMigrate } from './legacy-migrate.js';
 import { ALL_PERMISSIONS, BUILTIN_ROLES } from '../permissions.js';
 
@@ -32,9 +32,9 @@ export function seedRoles(db) {
   }
 }
 
-export function initDb(file) { current = openDb(file); return current; }
+export function initDb(file) { current = openDb(file); knex = knexOnConnection(current); return current; }
 export function getDb() { if (!current) throw new Error('DB not initialized'); return current; }
-export function setDb(db) { current = db; }
+export function setDb(db) { current = db; knex = knexOnConnection(db); }
 
 // Knex handle for the multi-engine layer. Call sites move from getDb() (better-sqlite3, SQLite only) to getKnex() file by file.
 let knex;

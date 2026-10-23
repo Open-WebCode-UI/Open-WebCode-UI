@@ -77,10 +77,10 @@ function getPage(req, courseId) {
 // Subpanels are the administrator's catalog; a page may only turn on ones that exist and are enabled, and only on a tutor page.
 // The page's model must be one the instructor can use themselves.
 // The administrator may also limit which models instructors can choose.
-export const checkModelId = (req, id) => {
+export const checkModelId = async (req, id) => {
   if (id == null) return;
   if (!courseModelAllowed(id)) fail(400, 'model_not_allowed');
-  if (!resolveModel(req.user, id)) fail(400, 'model_unavailable');
+  if (!await resolveModel(req.user, id)) fail(400, 'model_unavailable');
 };
 const checkModel = (req, b) => checkModelId(req, b.config.modelId);
 function checkSubpanels(b) {
@@ -145,9 +145,9 @@ export function coursesRouter({ adapterFactory } = {}) {
   });
 
   // Pages
-  route.post('/courses/:id/pages', 'course.author', (req, res) => {
+  route.post('/courses/:id/pages', 'course.author', async (req, res) => {
     const c = authorCourse(req);
-    const b = validate(pageBody, req.body); checkSubpanels(b); checkModel(req, b);
+    const b = validate(pageBody, req.body); checkSubpanels(b); await checkModel(req, b);
     if (b.moduleId != null && !moduleBelongsTo(c.id, b.moduleId)) fail(404, 'module_not_found');
     if (b.layout === ASSESSMENT_LAYOUT) { // a new quiz: the page and its assessment (default settings, no questions yet)
       const { pageId } = createAssessmentPage(c.id, { moduleId: b.moduleId ?? null, title: b.title, content: b.content });
@@ -203,9 +203,9 @@ export function coursesRouter({ adapterFactory } = {}) {
     audit(req.user.id, 'course.outline.update', String(c.id));
     res.json({ ok: true });
   });
-  route.put('/courses/:id/pages/:pid', 'course.author', (req, res) => {
+  route.put('/courses/:id/pages/:pid', 'course.author', async (req, res) => {
     const c = authorCourse(req); const p = getPage(req, c.id);
-    const b = validate(pageBody, req.body); checkSubpanels(b); checkModel(req, b);
+    const b = validate(pageBody, req.body); checkSubpanels(b); await checkModel(req, b);
     if ((p.layout === ASSESSMENT_LAYOUT) !== (b.layout === ASSESSMENT_LAYOUT)) fail(400, 'layout_locked'); // a page is born an assessment, or never becomes one
     if (b.layout === ASSESSMENT_LAYOUT) b.config = {};
     if (b.moduleId !== undefined && b.moduleId !== p.module_id) { // moving the page: it goes to the end of the module (or of the top level)
@@ -331,7 +331,7 @@ export function coursesRouter({ adapterFactory } = {}) {
       const fileMode = p.layout === 'agent_file';
       const b = validate(z.object({ message: z.string().trim().min(1).max(4000), ...(fileMode ? { content: z.string().max(MAX_FILE).optional() } : {}) }), req.body);
       const cfg = JSON.parse(p.config_json);
-      const rm = resolveModel(req.user, effectiveCourseModelId(cfg.modelId) ?? getSettings('general').defaultModels.chat);
+      const rm = await resolveModel(req.user, effectiveCourseModelId(cfg.modelId) ?? getSettings('general').defaultModels.chat);
       if (!rm) fail(400, 'no_model_available');
       let conv = pageConversation(req, c, p);
       const messages = conv ? loadMessages(conv.id) : [];
