@@ -31,7 +31,7 @@ export const nowDefault = (knex) => knex.raw(`(${nowEpoch(knex).toQuery()})`);
 export function dayOf(knex, col) {
   switch (engineOf(knex)) {
     case 'postgres': return knex.raw("to_char(to_timestamp(??) AT TIME ZONE 'UTC', 'YYYY-MM-DD')", [col]);
-    case 'mariadb': return knex.raw("DATE_FORMAT(CONVERT_TZ(FROM_UNIXTIME(??), @@session.time_zone, '+00:00'), '%Y-%m-%d')", [col]);
+    case 'mariadb': return knex.raw("DATE_FORMAT(DATE_ADD('1970-01-01 00:00:00', INTERVAL ?? SECOND), '%Y-%m-%d')", [col]);
     default: return knex.raw("strftime('%Y-%m-%d', ??, 'unixepoch')", [col]);
   }
 }
@@ -40,7 +40,7 @@ export function dayOf(knex, col) {
 export function isoOf(knex, col) {
   switch (engineOf(knex)) {
     case 'postgres': return knex.raw("to_char(to_timestamp(??) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')", [col]);
-    case 'mariadb': return knex.raw("DATE_FORMAT(CONVERT_TZ(FROM_UNIXTIME(??), @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ')", [col]);
+    case 'mariadb': return knex.raw("DATE_FORMAT(DATE_ADD('1970-01-01 00:00:00', INTERVAL ?? SECOND), '%Y-%m-%dT%H:%i:%sZ')", [col]);
     default: return knex.raw("strftime('%Y-%m-%dT%H:%M:%SZ', ??, 'unixepoch')", [col]);
   }
 }

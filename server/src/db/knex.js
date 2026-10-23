@@ -27,8 +27,9 @@ function networkConfig(c) {
     return { client: 'pg', connection, pool };
   }
   const base = { supportBigNumbers: true, bigNumberStrings: false, decimalNumbers: true };
-  const connection = c.url
-    ? { uri: c.url, ...base }
+  const u = c.url && new URL(c.url);
+  const connection = u
+    ? { host: u.hostname, port: Number(u.port || 3306), database: decodeURIComponent(u.pathname.slice(1)), user: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ...base }
     : { host: c.host, port: c.port, database: c.database, user: c.user, password: c.password, ...(c.ssl && { ssl: {} }), ...base };
   return {
     client: 'mysql2', connection,

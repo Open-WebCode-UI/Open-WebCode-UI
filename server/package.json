@@ -9,7 +9,8 @@
     "reset-breakglass": "node --env-file-if-exists=../.env src/cli/reset-breakglass.js",
     "docs:lint": "redocly lint",
     "docs:build": "node scripts/build-docs.mjs",
-    "build": "npm run docs:build"
+    "build": "npm run docs:build",
+    "test:db": "TEST_DB=sqlite,postgres,mariadb vitest run test/db-engines.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
