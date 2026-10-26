@@ -27,7 +27,7 @@ export function sessionsRouter() {
   route.get('/sessions', 'agent.plan', async (req, res) => {
     const p = await getProject({ params: { id: Number(req.query.projectId) }, user: req.user });
     const rows = getDb().prepare("SELECT id, title, created_at, updated_at, mode, model_id FROM conversations WHERE user_id=? AND project_id=? AND kind='agent' ORDER BY updated_at DESC, id DESC LIMIT 100").all(req.user.id, p.id);
-    const costs = sessionCosts(rows.map((c) => c.id), req.permissions); // null unless the administrator turned cost display on for everyone or this user has spend.view
+    const costs = await sessionCosts(rows.map((c) => c.id), req.permissions); // null unless the administrator turned cost display on for everyone or this user has spend.view
     res.json(await Promise.all(rows.map(async (c) => {
       const msgs = await loadMessages(c.id);
       return { ...(costs ? { cost: costs.get(c.id) ?? 0 } : {}), modelId: c.model_id, id: c.id, title: c.title, createdAt: c.created_at, updatedAt: c.updated_at, mode: c.mode, messages: msgs.length, running: activeConversations.has(c.id), context: contextInfo(estimateTokens(msgs, await overhead(req, c.mode)), windowSize(c)) };
@@ -46,10 +46,10 @@ export function sessionsRouter() {
     getDb().prepare('UPDATE conversations SET title=? WHERE id=?').run(title, c.id);
     res.json({ ok: true, title });
   });
-  route.delete('/sessions/:id', 'agent.plan', (req, res) => {
+  route.delete('/sessions/:id', 'agent.plan', async (req, res) => {
     const c = own(req);
     if (activeConversations.has(c.id)) fail(409, 'session_busy');
-    removeConversationFiles(c.id);
+    await removeConversationFiles(c.id);
     getDb().prepare('DELETE FROM conversations WHERE id=?').run(c.id);
     audit(req.user.id, 'session.delete', String(c.id));
     res.json({ ok: true });
@@ -62,7 +62,7 @@ export function sessionsRouter() {
     const rows = db.prepare("SELECT id FROM conversations WHERE user_id=? AND project_id=? AND kind='agent'").all(req.user.id, p.id).map((c) => c.id);
     const wanted = b.all ? rows : rows.filter((id) => b.ids.includes(id));
     const ids = wanted.filter((id) => !activeConversations.has(id));
-    for (const id of ids) { removeConversationFiles(id); db.prepare('DELETE FROM conversations WHERE id=?').run(id); }
+    for (const id of ids) { await removeConversationFiles(id); db.prepare('DELETE FROM conversations WHERE id=?').run(id); }
     audit(req.user.id, 'session.bulk_delete', String(p.id), { count: ids.length });
     res.json({ ok: true, deleted: ids.length, deletedIds: ids, skipped: wanted.length - ids.length });
   });

@@ -51,7 +51,7 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
         else if (ev.type === 'thinking') { thought += ev.text; emit({ type: 'thinking', text: ev.text }); }
         else if (ev.type === 'media') {
           // Stored for the conversation and shown in the UI; the model is not sent its own images back.
-          const a = ctx.attachments?.saveOutput?.(ev, `generated-${drawn.length + 1}`);
+          const a = await ctx.attachments?.saveOutput?.(ev, `generated-${drawn.length + 1}`);
           if (a) { drawn.push(a); emit({ type: 'media', attachments: [a] }); } else emit({ type: 'notice', text: 'The model returned an image that could not be shown (unsupported type or too large).' });
         }
         else if (ev.type === 'thinking_block') thinkingBlocks.push({ model: ev.model, block: ev.block }); // signed blocks, replayed to the same model
@@ -64,7 +64,7 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
       throw e;
     } finally { live.close(); }
     // Providers that report no usage (some local servers) are costed from an estimate, flagged as such.
-    onUsage?.(reported ?? { inputTokens: sentTokens, outputTokens: Math.ceil((text.length + thought.length + calls.reduce((n, c) => n + JSON.stringify(c.args ?? {}).length, 0)) / 4), estimated: true });
+    await onUsage?.(reported ?? { inputTokens: sentTokens, outputTokens: Math.ceil((text.length + thought.length + calls.reduce((n, c) => n + JSON.stringify(c.args ?? {}).length, 0)) / 4), estimated: true });
     messages.push({ role: 'assistant', content: text, ...(drawn.length ? { attachments: drawn } : {}), ...(thought ? { thinking: thought } : {}), ...(thinkingBlocks.length ? { thinkingBlocks } : {}),
       ...(calls.length ? { toolCalls: calls.map(({ id, name, args }) => ({ id, name, args })) } : {}) });
     // Some models write a call such as `conclude { ... }` or `propose_plan(...)` as prose instead of making it, so nothing runs.

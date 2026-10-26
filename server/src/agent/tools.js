@@ -261,7 +261,7 @@ async function runTool(name, args, ctx, meta) {
       let out = await ctx.mcp.call(name, args, ctx.signal);
       // Images/audio the server returned: keep them as attachments of this conversation when the model takes images, else say they were left out.
       if (out && typeof out === 'object') {
-        const saved = out.media.map((m, i) => ctx.attachments?.save?.(m, `${def.tool}-${i + 1}`) ?? null);
+        const saved = await Promise.all(out.media.map(async (m, i) => (await ctx.attachments?.save?.(m, `${def.tool}-${i + 1}`)) ?? null));
         const notes = out.media.map((m, i) => (saved[i] ? `[${saved[i].kind} returned: attachment ${saved[i].id}, ${saved[i].name}]` : `[${m.kind} content omitted]`));
         meta.attachments?.push(...saved.filter(Boolean));
         out = out.text === '(no output)' ? notes.join('\n') : `${out.text}\n${notes.join('\n')}`;
@@ -358,7 +358,7 @@ async function runTool(name, args, ctx, meta) {
         return `Wrote ${relFrom(ctx.root, abs)} (${Buffer.byteLength(args.content ?? '')} bytes)${existed ? `\n${REWRITE_NOTE}` : ''}`;
       }
       case 'save_attachment': {
-        const f = ctx.attachments?.read(String(args.attachment_id ?? ''));
+        const f = await ctx.attachments?.read(String(args.attachment_id ?? ''));
         if (!f) return 'Error: no such attachment. Use the id shown in the tool result ("attachment <id>").';
         const abs = pw(args.path); blocked(abs);
         const rel = relFrom(ctx.root, abs), busy = guard(rel, abs); if (busy) return busy;

@@ -9,11 +9,11 @@ export function onboardingRouter() {
   const route = defineRoutes(r, '/api/user/onboarding');
 
   // The tutorial belongs to the signed-in user only; every user has one regardless of role.
-  route.get('', 'authenticated', (req, res) => res.json(getOnboarding(req.user.id)));
-  route.post('/update', 'authenticated', (req, res) => {
+  route.get('', 'authenticated', async (req, res) => res.json(await getOnboarding(req.user.id)));
+  route.post('/update', 'authenticated', async (req, res) => {
     const b = validate(update, req.body);
-    res.json(updateOnboarding(req.user.id, b.stepIndex, { restart: b.restart }));
+    res.json(await updateOnboarding(req.user.id, b.stepIndex, { restart: b.restart }));
   });
-  route.post('/complete', 'authenticated', (req, res) => res.json(completeOnboarding(req.user.id)));
+  route.post('/complete', 'authenticated', async (req, res) => res.json(await completeOnboarding(req.user.id)));
   return r;
 }

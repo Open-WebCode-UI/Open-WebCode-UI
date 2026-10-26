@@ -10,10 +10,10 @@ export function reportsRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
   // Usage and spend for an optional date range, as unix seconds: by model, user, kind, provider, day, and the costliest sessions.
-  route.get('/reports/usage', 'report.read', (req, res) => res.json(usageReport(validate(range, req.query))));
+  route.get('/reports/usage', 'report.read', async (req, res) => res.json(await usageReport(validate(range, req.query))));
   // The same range, one row per model request.
-  route.get('/reports/usage.csv', 'report.read', (req, res) => {
-    const rows = usageRows(validate(range, req.query)); const cols = ['time', 'user', 'kind', 'provider', 'model', 'inputTokens', 'outputTokens', 'estimated', 'cost'];
+  route.get('/reports/usage.csv', 'report.read', async (req, res) => {
+    const rows = await usageRows(validate(range, req.query)); const cols = ['time', 'user', 'kind', 'provider', 'model', 'inputTokens', 'outputTokens', 'estimated', 'cost'];
     res.type('text/csv').attachment('usage.csv').send([cols.join(','), ...rows.map((x) => cols.map((c) => cell(x[c])).join(','))].join('\n'));
   });
   return r;

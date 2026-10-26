@@ -1,4 +1,4 @@
-import { getDb } from './db/index.js';
+import { getKnex } from './db/index.js';
 import { getSettings } from './settings.js';
 import { decrypt } from './crypto.js';
 import { assertSafeUrl } from './net-guard.js';
@@ -9,8 +9,8 @@ import { hit } from './ratelimit.js';
 export const MAX_RESULTS = 8, MAX_QUERY = 400, SEARCHES_PER_MINUTE = 20, SEARCH_TIMEOUT_MS = 10_000, MAX_RESPONSE_BYTES = 2_000_000;
 
 export const webSearchAllowed = () => !!getSettings('general').webSearchAllowed;
-export const userWebSearchOn = (userId) => !!getDb().prepare('SELECT web_search_enabled w FROM users WHERE id=?').get(userId)?.w;
-export const setUserWebSearch = (userId, on) => getDb().prepare('UPDATE users SET web_search_enabled=? WHERE id=?').run(+!!on, userId);
+export const userWebSearchOn = async (userId) => !!(await getKnex()('users').where({ id: userId }).first('web_search_enabled'))?.web_search_enabled;
+export const setUserWebSearch = (userId, on) => getKnex()('users').where({ id: userId }).update({ web_search_enabled: +!!on });
 // The search service the administrator configured (Admin > Web search), or null. `override` lets tests inject one.
 export function searchBackend(override) {
   if (override !== undefined) return override;
@@ -24,11 +24,11 @@ export function searchBackend(override) {
 export const webSearchConfigured = (override) => !!searchBackend(override);
 
 // Why web search is (not) available to this user right now: null when it is, otherwise a short reason code.
-export function unavailableReason(userId, perms, backendOverride) {
+export async function unavailableReason(userId, perms, backendOverride) {
   if (!perms.has('websearch.use')) return 'permission';
   if (!webSearchAllowed()) return 'tenant_disabled';
   if (!webSearchConfigured(backendOverride)) return 'not_configured';
-  if (!userWebSearchOn(userId)) return 'profile_disabled';
+  if (!(await userWebSearchOn(userId))) return 'profile_disabled';
   return null;
 }
 

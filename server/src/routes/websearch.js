@@ -8,12 +8,12 @@ export function webSearchRouter({ deps = {} } = {}) {
   const route = defineRoutes(r, '/api');
 
   // What the UI needs: the tenant switch, whether a search backend exists, and the user's own switch.
-  route.get('/web-search', 'websearch.use', (req, res) => {
-    res.json({ allowed: webSearchAllowed(), configured: webSearchConfigured(deps.backend), enabled: userWebSearchOn(req.user.id) });
+  route.get('/web-search', 'websearch.use', async (req, res) => {
+    res.json({ allowed: webSearchAllowed(), configured: webSearchConfigured(deps.backend), enabled: await userWebSearchOn(req.user.id) });
   });
-  route.put('/web-search/settings', 'websearch.use', (req, res) => {
+  route.put('/web-search/settings', 'websearch.use', async (req, res) => {
     const { enabled } = validate(z.object({ enabled: z.boolean() }).strict(), req.body);
-    setUserWebSearch(req.user.id, enabled);
+    await setUserWebSearch(req.user.id, enabled);
     audit(req.user.id, 'websearch.toggle', null, { enabled });
     res.json({ allowed: webSearchAllowed(), configured: webSearchConfigured(deps.backend), enabled });
   });

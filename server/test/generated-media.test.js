@@ -49,25 +49,25 @@ describe('stored tool media', () => {
     conv = Number(db.prepare("INSERT INTO conversations (user_id, kind, title) VALUES (?, 'agent', 't')").run(user).lastInsertRowid);
   });
 
-  it('saveGenerated sniffs the bytes, names the file, binds it to the conversation and enforces the size cap', () => {
-    const a = saveGenerated(user, conv, 'render-1', PNG, { maxBytes: 1000 });
+  it('saveGenerated sniffs the bytes, names the file, binds it to the conversation and enforces the size cap', async () => {
+    const a = await saveGenerated(user, conv, 'render-1', PNG, { maxBytes: 1000 });
     expect(a).toMatchObject({ kind: 'image', mime: 'image/png', name: 'render-1.png' });
     expect(getDb().prepare('SELECT conversation_id c FROM attachments WHERE id=?').get(a.id).c).toBe(conv);
-    expect(saveGenerated(user, conv, 'clip', WAV, { maxBytes: 1000 })).toMatchObject({ kind: 'audio', name: 'clip.wav' });
-    expect(saveGenerated(user, conv, 'x', PNG, { maxBytes: 10 })).toBeNull();                        // too large
-    expect(saveGenerated(user, conv, 'x', Buffer.from('plain text'), { maxBytes: 1000 })).toBeNull(); // not media
-    expect(saveGenerated(user, conv, 'x', Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0]), { maxBytes: 1000 })).toBeNull();
+    expect(await saveGenerated(user, conv, 'clip', WAV, { maxBytes: 1000 })).toMatchObject({ kind: 'audio', name: 'clip.wav' });
+    expect(await saveGenerated(user, conv, 'x', PNG, { maxBytes: 10 })).toBeNull();                        // too large
+    expect(await saveGenerated(user, conv, 'x', Buffer.from('plain text'), { maxBytes: 1000 })).toBeNull(); // not media
+    expect(await saveGenerated(user, conv, 'x', Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0]), { maxBytes: 1000 })).toBeNull();
   });
 
-  it('only the owner can read a file back', () => {
-    const a = saveGenerated(user, conv, 'p', PNG, { maxBytes: 1000 });
-    expect(getOwned(user, a.id)).toMatchObject({ id: a.id, kind: 'image' });
-    expect(getOwned(user + 1, a.id)).toBeNull();
-    expect(getOwned(user, '../../etc/passwd')).toBeNull();
+  it('only the owner can read a file back', async () => {
+    const a = await saveGenerated(user, conv, 'p', PNG, { maxBytes: 1000 });
+    expect(await getOwned(user, a.id)).toMatchObject({ id: a.id, kind: 'image' });
+    expect(await getOwned(user + 1, a.id)).toBeNull();
+    expect(await getOwned(user, '../../etc/passwd')).toBeNull();
   });
 
-  it('the hydrator loads images for tool messages and skips audio', () => {
-    const img = saveGenerated(user, conv, 'p', PNG, { maxBytes: 1000 }), snd = saveGenerated(user, conv, 'c', WAV, { maxBytes: 1000 });
+  it('the hydrator loads images for tool messages and skips audio', async () => {
+    const img = await saveGenerated(user, conv, 'p', PNG, { maxBytes: 1000 }), snd = await saveGenerated(user, conv, 'c', WAV, { maxBytes: 1000 });
     const [m] = hydrator(user)([{ role: 'tool', toolCallId: 'c1', name: 't', content: 'ok', attachments: [img, snd] }]);
     expect(m.files).toHaveLength(1); expect(m.files[0]).toMatchObject({ kind: 'image', mime: 'image/png' });
   });
@@ -81,7 +81,7 @@ describe('MCP tool calls that return media', () => {
     mcp: { defs: new Map([['mcp__d__render', { name: 'mcp__d__render', server: 'd', tool: 'render', mcp: true, mutating: false, parameters: { type: 'object', properties: {} } }]]), call: async () => mcpOut() },
     attachments: {
       save: (m, name) => saveGenerated(user, conv, name, m.data, { maxBytes: 1_000_000 }),
-      read: (id) => { const a = getOwned(user, id); return a ? { name: a.name, mime: a.mime, kind: a.kind, data: fs.readFileSync(path.join(config.dataDir, 'attachments', String(user), id)) } : null; },
+      read: async (id) => { const a = await getOwned(user, id); return a ? { name: a.name, mime: a.mime, kind: a.kind, data: fs.readFileSync(path.join(config.dataDir, 'attachments', String(user), id)) } : null; },
     },
     ...over,
   });

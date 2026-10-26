@@ -142,7 +142,7 @@ export function v1Router({ adapterFactory = createAdapter } = {}) {
     } finally {
       const out = text.join('');
       const usage = reported ?? { inputTokens: roughTokens(system + JSON.stringify(messages)), outputTokens: roughTokens(out + JSON.stringify(calls.map((c) => c.args ?? {}))), estimated: true };
-      recordUsage({ userId: req.apiUser.id, model: rm.model, provider: rm.provider, kind: 'api', ...usage });
+      await recordUsage({ userId: req.apiUser.id, model: rm.model, provider: rm.provider, kind: 'api', ...usage });
       req.apiUsage = usage;
     }
     const usage = { prompt_tokens: req.apiUsage.inputTokens, completion_tokens: req.apiUsage.outputTokens, total_tokens: req.apiUsage.inputTokens + req.apiUsage.outputTokens };
