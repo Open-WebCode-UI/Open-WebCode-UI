@@ -9,11 +9,11 @@ import { getProject } from './projects.js';
 export function terminalRouter({ manager = terminals } = {}) {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
-  const project = (req, id) => getProject({ params: { id }, user: req.user });
+  const project = async (req, id) => await getProject({ params: { id }, user: req.user });
 
   // What the Terminal pane may do right now (no secrets: only booleans and session ids the caller owns).
-  route.get('/terminal/status', 'authenticated', (req, res) => {
-    const perms = userPermissions(req.user.id), p = project(req, Number(req.query.projectId));
+  route.get('/terminal/status', 'authenticated', async (req, res) => {
+    const perms = userPermissions(req.user.id), p = await project(req, Number(req.query.projectId));
     const on = shellEnabled();
     const user = on && perms.has('terminal.use') ? manager.find(req.user.id, p.id, 'user') : null;
     const agent = on && (perms.has('agent.shell.run') || perms.has('terminal.use')) ? manager.find(req.user.id, p.id, 'agent') : null;
@@ -24,7 +24,7 @@ export function terminalRouter({ manager = terminals } = {}) {
   route.post('/terminal/sessions', { perm: 'terminal.use', stepup: true }, async (req, res) => {
     if (!shellEnabled()) fail(403, 'shell_disabled', { message: 'The administrator has not enabled shell access.' });
     const b = validate(z.object({ projectId: z.number().int(), cols: z.number().int().min(20).max(400).default(100), rows: z.number().int().min(5).max(200).default(28) }), req.body);
-    const p = project(req, b.projectId);
+    const p = await project(req, b.projectId);
     let s; const fresh = !manager.find(req.user.id, p.id, 'user');
     try { s = await manager.create({ userId: req.user.id, projectId: p.id, kind: 'user', cwd: p.dir, cols: b.cols, rows: b.rows }); }
     catch (e) { if (e.status === 429) fail(429, 'too_many_terminals'); throw e; }

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ZipArchive } from 'archiver';
 import AdmZip from 'adm-zip';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { insertId } from '../db/dialect.js';
 import { config } from '../config.js';
 import { defineRoutes, fail, validate, z } from '../http.js';
 import { getSettings } from '../settings.js';
@@ -21,8 +22,9 @@ import { searchProject, MAX_QUERY } from '../workspace/search.js';
 const SKIP = new Set(['node_modules', '.git']);
 const NAME = /^[\w][\w .-]{0,63}$/;
 
-export function getProject(req) {
-  const p = getDb().prepare('SELECT * FROM projects WHERE id=? AND user_id=?').get(req.params.id ?? req.body?.projectId, req.user.id);
+export async function getProject(req) {
+  const id = Number(req.params.id ?? req.body?.projectId);
+  const p = Number.isInteger(id) ? await getKnex()('projects').where({ id, user_id: req.user.id }).first() : null;
   if (!p) fail(404, 'project_not_found'); // object-level check: only own projects
   return p;
 }
@@ -83,8 +85,8 @@ export function projectsRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
 
-  route.get('/projects', 'project.read', (req, res) => {
-    res.json(getDb().prepare('SELECT id,name,created_at createdAt FROM projects WHERE user_id=? ORDER BY name').all(req.user.id));
+  route.get('/projects', 'project.read', async (req, res) => {
+    res.json(await getKnex()('projects').where({ user_id: req.user.id }).orderBy('name').select('id', 'name', 'created_at as createdAt'));
   });
 
   const createDir = (userId, name) => {
@@ -94,12 +96,12 @@ export function projectsRouter() {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
-  const insert = (userId, name, dir) => Number(getDb().prepare('INSERT INTO projects (user_id,name,dir) VALUES (?,?,?)').run(userId, name, dir).lastInsertRowid);
+  const insert = (userId, name, dir) => insertId(getKnex()('projects'), { user_id: userId, name, dir });
 
-  route.post('/projects', 'project.write', (req, res) => {
+  route.post('/projects', 'project.write', async (req, res) => {
     const { name } = validate(z.object({ name: z.string().min(1).max(64) }), req.body);
     const dir = createDir(req.user.id, name);
-    const id = insert(req.user.id, name, dir);
+    const id = await insert(req.user.id, name, dir);
     audit(req.user.id, 'project.create', name);
     res.status(201).json({ id, name });
   });
@@ -121,16 +123,16 @@ export function projectsRouter() {
         await git.raw(args).catch(() => fail(400, 'clone_failed'));
       } else fail(400, 'source_required');
     } catch (e) { fs.rmSync(dir, { recursive: true, force: true }); throw e; }
-    const id = insert(req.user.id, b.name, dir);
+    const id = await insert(req.user.id, b.name, dir);
     audit(req.user.id, 'project.import', b.name, { source: b.gitUrl ? 'git' : 'zip' });
     res.status(201).json({ id, name: b.name });
   });
 
-  route.delete('/projects/:id', 'project.delete', (req, res) => {
-    const p = getProject(req);
+  route.delete('/projects/:id', 'project.delete', async (req, res) => {
+    const p = await getProject(req);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     terminals.killForProject(p.id); kernels.killForProject(p.id);
-    getDb().prepare('DELETE FROM projects WHERE id=?').run(p.id);
+    await getKnex()('projects').where({ id: p.id }).del();
     fs.rmSync(p.dir, { recursive: true, force: true });
     fs.rmSync(path.join(config.dataDir, 'checkpoints', `${p.id}.git`), { recursive: true, force: true });
     audit(req.user.id, 'project.delete', p.name);
@@ -138,9 +140,9 @@ export function projectsRouter() {
   });
 
   // ---- files
-  route.get('/projects/:id/tree', 'files.read', (req, res) => res.json(tree(fs.realpathSync(getProject(req).dir), getProject(req).dir)));
-  route.get('/projects/:id/file', 'files.read', (req, res) => {
-    const p = getProject(req), abs = jail(p, String(req.query.path || ''));
+  route.get('/projects/:id/tree', 'files.read', async (req, res) => { const p = await getProject(req); res.json(tree(fs.realpathSync(p.dir), p.dir)); });
+  route.get('/projects/:id/file', 'files.read', async (req, res) => {
+    const p = await getProject(req), abs = jail(p, String(req.query.path || ''));
     let st; try { st = fs.statSync(abs); } catch { fail(404, 'not_found'); }
     if (!st.isFile()) fail(400, 'not_a_file');
     if (st.size > 5_000_000) fail(413, 'too_large');
@@ -150,7 +152,7 @@ export function projectsRouter() {
   });
   // Find in files. Globs in include / exclude are comma separated and match a file name or a path suffix (see globToRegex).
   route.get('/projects/:id/search', 'files.read', async (req, res) => {
-    const p = getProject(req), q = validate(z.object({
+    const p = await getProject(req), q = validate(z.object({
       q: z.string().min(1).max(MAX_QUERY), regex: z.enum(['0', '1']).optional(), case: z.enum(['0', '1']).optional(), word: z.enum(['0', '1']).optional(),
       include: z.string().max(300).optional(), exclude: z.string().max(300).optional(),
     }), req.query);
@@ -161,22 +163,22 @@ export function projectsRouter() {
     if (r.error) fail(500, 'search_failed');
     res.json(r);
   });
-  route.put('/projects/:id/file', 'files.write', express.json({ limit: '10mb' }), (req, res) => {
-    const p = getProject(req), b = validate(z.object({ path: z.string().min(1).max(500), content: z.string() }), req.body);
+  route.put('/projects/:id/file', 'files.write', express.json({ limit: '10mb' }), async (req, res) => {
+    const p = await getProject(req), b = validate(z.object({ path: z.string().min(1).max(500), content: z.string() }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const abs = jailW(p, b.path);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, b.content);
     res.json({ ok: true });
   });
-  route.post('/projects/:id/mkdir', 'files.write', (req, res) => {
-    const p = getProject(req), { path: rel } = validate(z.object({ path: z.string().min(1).max(500) }), req.body);
+  route.post('/projects/:id/mkdir', 'files.write', async (req, res) => {
+    const p = await getProject(req), { path: rel } = validate(z.object({ path: z.string().min(1).max(500) }), req.body);
     fs.mkdirSync(jailW(p, rel), { recursive: true });
     res.json({ ok: true });
   });
   // Rename or move (the same operation). Never silently replaces an existing file, and refuses to move a folder into itself.
-  route.post('/projects/:id/rename', 'files.write', (req, res) => {
-    const p = getProject(req), b = validate(z.object({ from: z.string().min(1).max(500), to: z.string().min(1).max(500), overwrite: z.boolean().default(false) }), req.body);
+  route.post('/projects/:id/rename', 'files.write', async (req, res) => {
+    const p = await getProject(req), b = validate(z.object({ from: z.string().min(1).max(500), to: z.string().min(1).max(500), overwrite: z.boolean().default(false) }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const from = jailW(p, b.from), to = jailW(p, b.to), root = fs.realpathSync(p.dir);
     if (from === root) fail(400, 'cannot_move_root');
@@ -191,8 +193,8 @@ export function projectsRouter() {
     fs.renameSync(from, to);
     res.json({ ok: true });
   });
-  route.delete('/projects/:id/file', 'files.write', (req, res) => {
-    const p = getProject(req), abs = jailW(p, String(req.query.path || ''));
+  route.delete('/projects/:id/file', 'files.write', async (req, res) => {
+    const p = await getProject(req), abs = jailW(p, String(req.query.path || ''));
     if (abs === fs.realpathSync(p.dir)) fail(400, 'cannot_delete_root');
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     fs.rmSync(abs, { recursive: true, force: true });
@@ -201,8 +203,8 @@ export function projectsRouter() {
 
   // Upload one file as the raw request body (binary safe, no base64 inflation). Existing files are only replaced with ?overwrite=1.
   const rawBody = (req, res, next) => express.raw({ type: () => true, limit: `${getSettings('general').maxUploadMb}mb` })(req, res, next);
-  route.put('/projects/:id/upload', 'files.write', rawBody, (req, res) => {
-    const p = getProject(req);
+  route.put('/projects/:id/upload', 'files.write', rawBody, async (req, res) => {
+    const p = await getProject(req);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const abs = jailW(p, String(req.query.path || ''));
     if (abs === fs.realpathSync(p.dir)) fail(400, 'invalid_path');
@@ -224,8 +226,8 @@ export function projectsRouter() {
     zip.finalize();
   };
   // Whole project, or just a folder with ?path=. Folders and the project are zipped; node_modules is left out.
-  route.get('/projects/:id/download', 'download.code', (req, res) => {
-    const p = getProject(req), rel = req.query.path ? String(req.query.path) : '';
+  route.get('/projects/:id/download', 'download.code', async (req, res) => {
+    const p = await getProject(req), rel = req.query.path ? String(req.query.path) : '';
     const dir = rel ? jail(p, rel) : p.dir;
     let st; try { st = fs.statSync(dir); } catch { fail(404, 'not_found'); }
     if (!st.isDirectory()) fail(400, 'not_a_directory');
@@ -233,8 +235,8 @@ export function projectsRouter() {
     sendZip(res, dir, rel ? path.basename(dir) : p.name, { ignore: ['node_modules/**'] });
   });
   // A single file, always as an attachment of an opaque type: project files are untrusted and must never be rendered on our origin.
-  route.get('/projects/:id/download-file', 'files.read', (req, res) => {
-    const p = getProject(req), abs = jail(p, String(req.query.path || ''));
+  route.get('/projects/:id/download-file', 'files.read', async (req, res) => {
+    const p = await getProject(req), abs = jail(p, String(req.query.path || ''));
     let st; try { st = fs.statSync(abs); } catch { fail(404, 'not_found'); }
     if (!st.isFile()) fail(400, 'not_a_file');
     res.attachment(path.basename(abs)); // sets a type from the file extension, so override it afterwards
@@ -245,13 +247,13 @@ export function projectsRouter() {
   // ---- git
   const gitOf = (p) => safeGit(p.dir);
   route.get('/projects/:id/git/status', 'git.commit', async (req, res) => {
-    const p = getProject(req);
+    const p = await getProject(req);
     if (!fs.existsSync(path.join(p.dir, '.git'))) return res.json({ initialized: false });
     const s = await gitOf(p).status();
     res.json({ initialized: true, branch: s.current, files: s.files.map((f) => ({ path: f.path, status: f.working_dir + f.index })), ahead: s.ahead });
   });
   route.post('/projects/:id/git/commit', 'git.commit', async (req, res) => {
-    const p = getProject(req), b = validate(z.object({ message: z.string().min(1).max(500) }), req.body);
+    const p = await getProject(req), b = validate(z.object({ message: z.string().min(1).max(500) }), req.body);
     const git = gitOf(p);
     if (!fs.existsSync(path.join(p.dir, '.git'))) await git.init();
     const name = req.user.display_name || req.user.username || 'User', email = req.user.email || 'user@localhost';
@@ -262,7 +264,7 @@ export function projectsRouter() {
     res.json({ commit: out.commit, summary: out.summary });
   });
   route.post('/projects/:id/git/push', 'git.push', async (req, res) => {
-    const p = getProject(req), b = validate(z.object({ remoteUrl: z.string().max(1000), branch: z.string().regex(/^[\w./-]{1,100}$/).default('main'), token: z.string().max(500).optional() }), req.body);
+    const p = await getProject(req), b = validate(z.object({ remoteUrl: z.string().max(1000), branch: z.string().regex(/^[\w./-]{1,100}$/).default('main'), token: z.string().max(500).optional() }), req.body);
     await assertSafeUrl(b.remoteUrl);
     // Token is supplied per-request via an HTTP header and never persisted or written to .git/config.
     const git = safeGit(p.dir, { token: b.token });
@@ -273,11 +275,11 @@ export function projectsRouter() {
 
   // ---- checkpoints
   route.get('/projects/:id/checkpoints', 'checkpoint.read', async (req, res) => {
-    const p = getProject(req);
+    const p = await getProject(req);
     res.json(await listCheckpoints(p.id, p.dir));
   });
   route.post('/projects/:id/checkpoints', 'checkpoint.write', async (req, res) => {
-    const p = getProject(req), { label } = validate(z.object({ label: z.string().min(1).max(120).default('Manual checkpoint') }), req.body);
+    const p = await getProject(req), { label } = validate(z.object({ label: z.string().min(1).max(120).default('Manual checkpoint') }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const cp = await createCheckpoint(p.id, p.dir, { label, author: 'user' });
     recordCheckpointMarks(p.id, cp.id);
@@ -285,14 +287,14 @@ export function projectsRouter() {
     res.status(201).json(cp);
   });
   route.get('/projects/:id/checkpoints/:cp/diff', 'checkpoint.read', async (req, res) => {
-    const p = getProject(req);
+    const p = await getProject(req);
     const { files, show } = await diffCheckpoint(p.id, p.dir, req.params.cp).catch(() => fail(400, 'invalid_checkpoint'));
     const file = req.query.file ? String(req.query.file) : null;
     if (file) { jail(p, file); return res.json({ path: file, checkpointContent: await show(file) }); }
     res.json({ files });
   });
   route.post('/projects/:id/checkpoints/:cp/restore', 'checkpoint.write', async (req, res) => {
-    const p = getProject(req);
+    const p = await getProject(req);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const out = await restoreCheckpoint(p.id, p.dir, req.params.cp).catch((e) => fail(400, 'restore_failed', { message: e.message }));
     // Sessions go back with the files. The "Before restore" checkpoint remembers where they stood, so rolling forward restores them too.

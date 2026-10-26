@@ -20,32 +20,32 @@ export function skillsRouter() {
 
   // Skills are per-user (profile) and kept separately for the Agent page and the Chat page (?scope=agent|chat, default agent).
   // Listing is open to any signed-in user; editing needs profile.skills.edit.
-  route.get('/skills', 'authenticated', (req, res) => res.json(listSkills(req.user.id, scopeOf(req))));
-  route.post('/skills', 'profile.skills.edit', (req, res) => {
+  route.get('/skills', 'authenticated', async (req, res) => res.json(await listSkills(req.user.id, scopeOf(req))));
+  route.post('/skills', 'profile.skills.edit', async (req, res) => {
     const b = validate(body, req.body);
-    const id = saveCustomSkill(req.user.id, b, scopeOf(req));
+    const id = await saveCustomSkill(req.user.id, b, scopeOf(req));
     audit(req.user.id, 'skill.create', b.name);
     res.status(201).json({ id });
   });
-  route.put('/skills/custom/:id', 'profile.skills.edit', (req, res) => {
+  route.put('/skills/custom/:id', 'profile.skills.edit', async (req, res) => {
     const b = validate(body, req.body);
-    saveCustomSkill(req.user.id, { ...b, id: Number(req.params.id) }, scopeOf(req));
+    await saveCustomSkill(req.user.id, { ...b, id: Number(req.params.id) }, scopeOf(req));
     audit(req.user.id, 'skill.update', b.name);
     res.json({ ok: true });
   });
-  route.delete('/skills/custom/:id', 'profile.skills.edit', (req, res) => {
-    if (!deleteCustom(req.user.id, Number(req.params.id), scopeOf(req))) fail(404, 'not_found');
+  route.delete('/skills/custom/:id', 'profile.skills.edit', async (req, res) => {
+    if (!await deleteCustom(req.user.id, Number(req.params.id), scopeOf(req))) fail(404, 'not_found');
     audit(req.user.id, 'skill.delete', req.params.id);
     res.json({ ok: true });
   });
-  route.put('/skills/builtin/:key', 'profile.skills.edit', (req, res) => {
+  route.put('/skills/builtin/:key', 'profile.skills.edit', async (req, res) => {
     const b = validate(z.object({ scope: z.enum(SCOPES).optional(), description: z.string().max(300).optional(), instructions: z.string().min(1).max(30000).optional(), enabled: z.boolean().optional() }), req.body);
-    saveBuiltinOverride(req.user.id, req.params.key, b, scopeOf(req));
+    await saveBuiltinOverride(req.user.id, req.params.key, b, scopeOf(req));
     audit(req.user.id, 'skill.builtin.update', req.params.key);
     res.json({ ok: true });
   });
-  route.delete('/skills/builtin/:key', 'profile.skills.edit', (req, res) => {
-    resetBuiltin(req.user.id, req.params.key, scopeOf(req));
+  route.delete('/skills/builtin/:key', 'profile.skills.edit', async (req, res) => {
+    await resetBuiltin(req.user.id, req.params.key, scopeOf(req));
     audit(req.user.id, 'skill.builtin.reset', req.params.key);
     res.json({ ok: true });
   });

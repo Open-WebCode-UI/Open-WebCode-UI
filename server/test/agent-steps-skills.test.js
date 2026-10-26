@@ -211,13 +211,13 @@ describe('skills', () => {
   });
   it('/skill-name expands server-side for the model; the user\'s own text is what history shows', async () => {
     const id = login(app, { username: 'slash1' }).id;
-    const inv = expandSkillInvocation(id, '/code-review src/app.js please');
+    const inv = await expandSkillInvocation(id, '/code-review src/app.js please');
     expect(inv.skill.name).toBe('code-review'); expect(inv.display).toBe('/code-review src/app.js please');
     expect(inv.content).toContain('<skill-instructions>'); expect(inv.content).toContain('User request: src/app.js please');
-    expect(expandSkillInvocation(id, '/code-review').content).toContain('Apply this skill to the current project.');
-    expect(expandSkillInvocation(id, '/unknown-skill hi')).toBeNull(); expect(expandSkillInvocation(id, 'not a /code-review')).toBeNull();
+    expect((await expandSkillInvocation(id, '/code-review')).content).toContain('Apply this skill to the current project.');
+    expect(await expandSkillInvocation(id, '/unknown-skill hi')).toBeNull(); expect(await expandSkillInvocation(id, 'not a /code-review')).toBeNull();
     getDb().prepare("INSERT INTO skills (user_id, builtin_key, name, description, instructions, enabled) VALUES (?,?,?,?,?,0)").run(id, 'debug', 'debug', 'd', 'x');
-    expect(expandSkillInvocation(id, '/debug now')).toBeNull(); // disabled skills are not invocable
+    expect(await expandSkillInvocation(id, '/debug now')).toBeNull(); // disabled skills are not invocable
   });
   it('invoking a skill in chat and agent turns sends the instructions to the model and saves the original text', async () => {
     const modelId = addProvider(); const seen = [];
@@ -233,5 +233,5 @@ describe('skills', () => {
     const t = await w.post('/api/agent/turn').send({ projectId: p.id, message: '/code-review', mode: 'plan', modelId }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
     expect(t.body).toContain('"type":"skill"'); expect(seen[1].system).toContain('# Skills'); expect(seen[1].system).toContain('- code-review:');
   });
-  it('listSkills only includes the caller\'s data', () => { expect(listSkills(login(app, { username: 'lister1' }).id).length).toBe(BUILTIN_SKILLS.length); });
+  it('listSkills only includes the caller\'s data', async () => { expect((await listSkills(login(app, { username: 'lister1' }).id)).length).toBe(BUILTIN_SKILLS.length); });
 });

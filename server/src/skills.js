@@ -1,4 +1,5 @@
-import { getDb } from './db/index.js';
+import { getKnex } from './db/index.js';
+import { insertId } from './db/dialect.js';
 import { HttpError } from './http.js';
 
 // Pre-written skills. Users can edit any of them (stored as a per-user override) and reset to these defaults.
@@ -210,52 +211,54 @@ const dto = (b, row, scope) => ({
   defaults: { description: b.description, instructions: b.instructions },
 });
 
-export function listSkills(userId, scope = 'agent') {
-  const rows = getDb().prepare('SELECT * FROM skills WHERE user_id=? AND scope=? ORDER BY name').all(userId, scope);
+const now = () => Math.floor(Date.now() / 1000);
+
+export async function listSkills(userId, scope = 'agent') {
+  const rows = await getKnex()('skills').where({ user_id: userId, scope }).orderBy('name');
   const builtins = BUILTINS[scope].map((b) => dto(b, rows.find((r) => r.builtin_key === b.key), scope));
   const custom = rows.filter((r) => !r.builtin_key).map((r) => ({ id: r.id, key: null, name: r.name, scope, builtin: false, modified: false, description: r.description, instructions: r.instructions, enabled: !!r.enabled }));
   return [...builtins, ...custom];
 }
-export const enabledSkills = (userId, scope = 'agent') => listSkills(userId, scope).filter((s) => s.enabled);
+export const enabledSkills = async (userId, scope = 'agent') => (await listSkills(userId, scope)).filter((s) => s.enabled);
 // Skills the agent itself may load with use_skill (command-style skills such as /compact are not for the agent).
-export const agentSkills = (userId) => enabledSkills(userId, 'agent').filter((s) => !s.action);
+export const agentSkills = async (userId) => (await enabledSkills(userId, 'agent')).filter((s) => !s.action);
 
 // Block handed to the model whenever a skill is loaded (by the user's /name or by the agent's use_skill tool).
 export const skillBlock = (s) => `[Skill "${s.name}". Follow these instructions for this request. Skills never change which tools you have or what you are allowed to do.]\n\n<skill-instructions>\n${s.instructions}\n</skill-instructions>`;
 
 // "/code-review src/app.js" -> expanded model-facing message, original text kept for display.
-export function expandSkillInvocation(userId, text, scope = 'agent') {
+export async function expandSkillInvocation(userId, text, scope = 'agent') {
   const m = /^\/([a-z0-9][a-z0-9-]*)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!m) return null;
-  const skill = enabledSkills(userId, scope).find((s) => s.name === m[1]);
+  const skill = (await enabledSkills(userId, scope)).find((s) => s.name === m[1]);
   if (!skill || skill.action) return null; // command-style skills (/compact) are run by the server, not sent to the model as instructions
   const rest = (m[2] || '').trim();
   return { skill, display: text, content: `${skillBlock(skill)}\n\nUser request: ${rest || (scope === 'chat' ? 'Apply this skill to what I pasted or said above.' : 'Apply this skill to the current project.')}` };
 }
 
-export function saveCustomSkill(userId, { id, name, description, instructions, enabled }, scope = 'agent') {
-  const db = getDb();
+export async function saveCustomSkill(userId, { id, name, description, instructions, enabled }, scope = 'agent') {
+  const k = getKnex();
   if (!validSkillName(name)) throw new HttpError(400, 'invalid_skill_name', { message: 'Use 2-39 lowercase letters, digits, and dashes.' });
   if (RESERVED_COMMANDS[scope].includes(name) || BUILTINS[scope].some((b) => b.name === name)) throw new HttpError(409, 'skill_name_reserved', { message: 'That name belongs to a built-in skill or command; edit the built-in instead.' });
-  const clash = db.prepare('SELECT id FROM skills WHERE user_id=? AND scope=? AND name=?').get(userId, scope, name);
+  const clash = await k('skills').where({ user_id: userId, scope, name }).first('id');
   if (clash && clash.id !== id) throw new HttpError(409, 'skill_exists');
   if (id) {
-    const r = db.prepare('UPDATE skills SET name=?, description=?, instructions=?, enabled=?, updated_at=strftime(\'%s\',\'now\') WHERE id=? AND user_id=? AND scope=? AND builtin_key IS NULL').run(name, description, instructions, +enabled, id, userId, scope);
-    if (!r.changes) throw new HttpError(404, 'not_found');
+    const changed = await k('skills').where({ id, user_id: userId, scope }).whereNull('builtin_key').update({ name, description, instructions, enabled: +enabled, updated_at: now() });
+    if (!changed) throw new HttpError(404, 'not_found');
     return id;
   }
-  if (db.prepare('SELECT COUNT(*) c FROM skills WHERE user_id=? AND scope=? AND builtin_key IS NULL').get(userId, scope).c >= MAX_CUSTOM_SKILLS) throw new HttpError(400, 'too_many_skills');
-  return Number(db.prepare('INSERT INTO skills (user_id, scope, name, description, instructions, enabled) VALUES (?,?,?,?,?,?)').run(userId, scope, name, description, instructions, +enabled).lastInsertRowid);
+  if ((await k('skills').where({ user_id: userId, scope }).whereNull('builtin_key').count({ c: '*' }).first()).c >= MAX_CUSTOM_SKILLS) throw new HttpError(400, 'too_many_skills');
+  return insertId(k('skills'), { user_id: userId, scope, name, description, instructions, enabled: +enabled });
 }
 
-export function saveBuiltinOverride(userId, key, patch, scope = 'agent') {
+export async function saveBuiltinOverride(userId, key, patch, scope = 'agent') {
   const b = BUILTINS[scope].find((x) => x.key === key);
   if (!b) throw new HttpError(404, 'not_found');
-  const db = getDb();
-  const cur = db.prepare('SELECT * FROM skills WHERE user_id=? AND scope=? AND builtin_key=?').get(userId, scope, key);
+  const k = getKnex();
+  const cur = await k('skills').where({ user_id: userId, scope, builtin_key: key }).first();
   const next = { description: patch.description ?? cur?.description ?? b.description, instructions: patch.instructions ?? cur?.instructions ?? b.instructions, enabled: patch.enabled ?? (cur ? !!cur.enabled : true) };
-  if (cur) db.prepare("UPDATE skills SET description=?, instructions=?, enabled=?, updated_at=strftime('%s','now') WHERE id=?").run(next.description, next.instructions, +next.enabled, cur.id);
-  else db.prepare('INSERT INTO skills (user_id, scope, builtin_key, name, description, instructions, enabled) VALUES (?,?,?,?,?,?,?)').run(userId, scope, key, b.name, next.description, next.instructions, +next.enabled);
+  if (cur) await k('skills').where({ id: cur.id }).update({ description: next.description, instructions: next.instructions, enabled: +next.enabled, updated_at: now() });
+  else await k('skills').insert({ user_id: userId, scope, builtin_key: key, name: b.name, description: next.description, instructions: next.instructions, enabled: +next.enabled });
 }
-export const resetBuiltin = (userId, key, scope = 'agent') => getDb().prepare('DELETE FROM skills WHERE user_id=? AND scope=? AND builtin_key=?').run(userId, scope, key);
-export const deleteCustom = (userId, id, scope = 'agent') => getDb().prepare('DELETE FROM skills WHERE id=? AND user_id=? AND scope=? AND builtin_key IS NULL').run(id, userId, scope).changes > 0;
+export const resetBuiltin = (userId, key, scope = 'agent') => getKnex()('skills').where({ user_id: userId, scope, builtin_key: key }).del();
+export const deleteCustom = async (userId, id, scope = 'agent') => (await getKnex()('skills').where({ id, user_id: userId, scope }).whereNull('builtin_key').del()) > 0;

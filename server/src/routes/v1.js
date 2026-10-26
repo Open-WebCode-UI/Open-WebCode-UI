@@ -1,6 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
 import { registry, HttpError, fail, validate, z } from '../http.js';
 import { getSettings } from '../settings.js';
 import { userPermissions, userRoleNames } from '../auth/rbac.js';
@@ -15,26 +15,26 @@ import { resolveModel } from './providers.js';
 const apiError = (res, status, message, type = 'invalid_request_error', code = null) => res.status(status).json({ error: { message, type, code } });
 const publicId = (providerName, modelId) => `${providerName}/${modelId}`;
 
-function apiAuth(req, res, next) {
+async function apiAuth(req, res, next) {
   const s = getSettings('api');
   if (!s.enabled) return apiError(res, 503, 'The API is turned off on this server.', 'api_disabled', 'api_disabled');
   const bad = () => (hit(`apiauth:${req.ip}`, 20, 60_000) ? apiError(res, 401, 'Invalid or missing API key.', 'authentication_error', 'invalid_api_key') : apiError(res, 429, 'Too many failed attempts.', 'rate_limit_error', 'rate_limited'));
   const m = /^Bearer (\S+)$/.exec(req.headers.authorization || '');
-  const found = m && lookupKey(m[1]);
+  const found = m && await lookupKey(m[1]);
   if (!found) return bad();
   // Permission is read on every call, so taking api.use away from a role stops its members' keys at once.
   if (!userPermissions(found.user.id).has('api.use')) return apiError(res, 403, 'The key owner is not allowed to use the API.', 'permission_error', 'forbidden');
   if (!hit(`apikey:${found.key.id}`, s.rateLimitPerMin, 60_000)) { res.set('Retry-After', '60'); return apiError(res, 429, 'Rate limit exceeded for this key.', 'rate_limit_error', 'rate_limited'); }
-  touchKey(found.key);
+  await touchKey(found.key);
   req.apiKey = found.key; req.apiUser = found.user;
   next();
 }
 
 // Models this key may call: enabled connection + enabled model + the connection's role allow-list + the key's own restriction.
-function usableModels(user, key) {
+async function usableModels(user, key) {
   const roles = userRoleNames(user.id), only = key.model_ids ? JSON.parse(key.model_ids) : null;
-  return getDb().prepare(`SELECT m.id, m.model_id, p.name provider, p.allowed_roles ar FROM models m JOIN providers p ON p.id=m.provider_id
-    WHERE m.enabled=1 AND p.enabled=1 ORDER BY p.position, p.id, m.position, m.id`).all()
+  return (await getKnex()('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.enabled': 1, 'p.enabled': 1 })
+    .orderBy([{ column: 'p.position' }, { column: 'p.id' }, { column: 'm.position' }, { column: 'm.id' }]).select('m.id', 'm.model_id', 'p.name as provider', 'p.allowed_roles as ar'))
     .filter((m) => (!only || only.includes(m.id)) && (() => { const ar = JSON.parse(m.ar); return !ar.length || ar.some((x) => roles.includes(x)); })());
 }
 
@@ -97,14 +97,14 @@ export function v1Router({ adapterFactory = createAdapter } = {}) {
     r[method](path, apiAuth, ...handlers);
   };
 
-  route('get', '/models', (req, res) => {
-    res.json({ object: 'list', data: usableModels(req.apiUser, req.apiKey).map((m) => ({ id: publicId(m.provider, m.model_id), object: 'model', created: 0, owned_by: m.provider })) });
+  route('get', '/models', async (req, res) => {
+    res.json({ object: 'list', data: (await usableModels(req.apiUser, req.apiKey)).map((m) => ({ id: publicId(m.provider, m.model_id), object: 'model', created: 0, owned_by: m.provider })) });
   });
 
   route('post', '/chat/completions', express.json({ limit: '8mb' }), async (req, res) => {
     const b = validate(chatBody, req.body);
     if (b.n !== undefined && b.n !== 1) fail(400, 'unsupported_n', { message: 'Only n=1 is supported.' });
-    const row = usableModels(req.apiUser, req.apiKey).find((m) => publicId(m.provider, m.model_id) === b.model);
+    const row = (await usableModels(req.apiUser, req.apiKey)).find((m) => publicId(m.provider, m.model_id) === b.model);
     const rm = row && await resolveModel(req.apiUser, row.id);
     if (!rm) fail(404, 'model_not_found', { message: `The model "${b.model}" does not exist or you do not have access to it.` });
     const { system, messages } = toNeutral(b.messages);

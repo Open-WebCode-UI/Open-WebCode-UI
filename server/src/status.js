@@ -44,7 +44,7 @@ export async function buildStatus({ req, project = null, rm = null, adapter = nu
     server: { name: general.appName, url: config.baseUrl, secure: config.baseUrl.startsWith('https://'), shell: general.execMode === 'workspace_shell' ? 'enabled' : 'files only' },
     user: { displayName: u.display_name || u.username || u.email, username: u.username || null, email: u.email || null, roles: userRoleNames(u.id), mustChangePassword: !!u.must_change_password },
     project: null,
-    features: { mcpServers: activeServers(u.id).length, memory: activeScopes(u.id, project?.id) },
+    features: { mcpServers: (await activeServers(u.id)).length, memory: await activeScopes(u.id, project?.id) },
   };
   if (project) {
     const f = countFiles(project.dir);

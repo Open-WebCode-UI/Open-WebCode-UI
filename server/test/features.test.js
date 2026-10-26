@@ -81,7 +81,7 @@ describe('MCP servers', () => {
     expect((await dev.post('/api/mcp/my-servers').send({ name: 'more', url: 'https://more.example.com/mcp' })).status).toBe(403);
     expect((await dev.put(`/api/mcp/my-servers/${mine.id}`).send({ enabled: false })).status).toBe(403);
     expect((await dev.post(`/api/mcp/my-servers/${mine.id}/test`)).status).toBe(403);
-    expect(activeServers(dev.id).map((s) => s.name)).toEqual(['docs']);
+    expect((await activeServers(dev.id)).map((s) => s.name)).toEqual(['docs']);
     expect((await dev.del(`/api/mcp/my-servers/${mine.id}`)).status).toBe(200); // can still clean up
   });
 

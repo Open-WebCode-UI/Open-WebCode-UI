@@ -390,8 +390,8 @@ export function coursesRouter({ adapterFactory } = {}) {
 
   // ---------- Exercise rules
   // The rules for a workspace, for the IDE to show: null for an ordinary project.
-  route.get('/projects/:id/exercise-policy', 'project.read', (req, res) => {
-    const p = getProject(req); const sc = scopeOf(p.id);
+  route.get('/projects/:id/exercise-policy', 'project.read', async (req, res) => {
+    const p = await getProject(req); const sc = scopeOf(p.id);
     res.json(sc ? { mode: sc.policy.mode, shell: sc.policy.shell, locked: sc.locked, submitted: sc.submitted, expired: sc.expired, deadline: sc.deadline, summary: describePolicy(sc.policy) } : null);
   });
   // What learners with a given role could do under a set of rules, for the exercise builder's preview.

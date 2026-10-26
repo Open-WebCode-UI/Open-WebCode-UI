@@ -45,13 +45,13 @@ describe('chat skills are separate from agent skills', () => {
 
   it('a slash skill in chat uses the chat scope; agent-only skills are not invocable there', async () => {
     freshDb(); const app0 = createApp(); const u = login(app0, { username: 'scoper3' });
-    expect(expandSkillInvocation(u.id, '/summarize this', 'chat')?.content).toContain('Summarize the text the user pasted');
-    expect(expandSkillInvocation(u.id, '/summarize this')).toBeNull();
-    expect(expandSkillInvocation(u.id, '/security-review x', 'chat')).toBeNull();
-    expect(expandSkillInvocation(u.id, '/security-review x')).not.toBeNull();
+    expect((await expandSkillInvocation(u.id, '/summarize this', 'chat'))?.content).toContain('Summarize the text the user pasted');
+    expect(await expandSkillInvocation(u.id, '/summarize this')).toBeNull();
+    expect(await expandSkillInvocation(u.id, '/security-review x', 'chat')).toBeNull();
+    expect(await expandSkillInvocation(u.id, '/security-review x')).not.toBeNull();
     getDb().prepare("INSERT INTO skills (user_id, scope, builtin_key, name, description, instructions, enabled) VALUES (?, 'chat', 'summarize', 'summarize', 'd', 'x', 0)").run(u.id);
-    expect(expandSkillInvocation(u.id, '/summarize', 'chat')).toBeNull();
-    expect(listSkills(u.id, 'chat').length).toBe(CHAT_BUILTIN_SKILLS.length);
+    expect(await expandSkillInvocation(u.id, '/summarize', 'chat')).toBeNull();
+    expect((await listSkills(u.id, 'chat')).length).toBe(CHAT_BUILTIN_SKILLS.length);
   });
 
   it('the agent only offers its own skills to the model', async () => {
@@ -65,7 +65,7 @@ describe('chat skills are separate from agent skills', () => {
 });
 
 describe('skills table migration', () => {
-  it('moves existing skills into the agent scope and lets both scopes reuse a name', () => {
+  it('moves existing skills into the agent scope and lets both scopes reuse a name', async () => {
     const file = path.join(tmpDir(), 'old.db');
     const first = openDb(file);
     first.exec('DROP TABLE skills'); // the shape before scopes existed
@@ -76,8 +76,8 @@ describe('skills table migration', () => {
     first.close();
     const db = openDb(file); setDb(db);
     expect(db.prepare('SELECT name, scope, enabled FROM skills ORDER BY name').all()).toEqual([{ name: 'debug', scope: 'agent', enabled: 0 }, { name: 'mine', scope: 'agent', enabled: 1 }]);
-    expect(listSkills(uid, 'agent').find((s) => s.name === 'debug')).toMatchObject({ enabled: false, instructions: 'custom debug' });
-    expect(listSkills(uid, 'chat').find((s) => s.name === 'debug')).toMatchObject({ enabled: true });
+    expect((await listSkills(uid, 'agent')).find((s) => s.name === 'debug')).toMatchObject({ enabled: false, instructions: 'custom debug' });
+    expect((await listSkills(uid, 'chat')).find((s) => s.name === 'debug')).toMatchObject({ enabled: true });
     db.prepare("INSERT INTO skills (user_id, scope, name, instructions) VALUES (?, 'chat', 'mine', 'chat mine')").run(uid); // same name, other scope
     expect(openDb(file).prepare('SELECT COUNT(*) n FROM skills').get().n).toBe(3); // reopening is a no-op
   });

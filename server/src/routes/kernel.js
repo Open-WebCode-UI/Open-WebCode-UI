@@ -14,9 +14,9 @@ export function kernelRouter({ manager = kernels } = {}) {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
   const Body = z.object({ projectId: z.number().int(), path: z.string().min(1).max(500).regex(/\.ipynb$/i) });
-  const target = (req, b) => {
+  const target = async (req, b) => {
     if (!shellEnabled()) fail(403, 'shell_disabled', { message: 'The administrator has not enabled shell access.' });
-    const p = getProject({ params: { id: b.projectId }, user: req.user });
+    const p = await getProject({ params: { id: b.projectId }, user: req.user });
     try {
       const abs = resolveInJail(p.dir, b.path);
       return { p, file: relFrom(p.dir, abs), cwd: fs.statSync(path.dirname(abs)).isDirectory() ? path.dirname(abs) : p.dir }; // like Jupyter, relative paths start in the notebook's folder
@@ -25,7 +25,7 @@ export function kernelRouter({ manager = kernels } = {}) {
 
   route.post('/terminal/kernel/run', { perm: 'terminal.use', stepup: true }, async (req, res) => {
     const b = validate(Body.extend({ code: z.string().max(200_000) }), req.body);
-    const { p, file, cwd } = target(req, b);
+    const { p, file, cwd } = await target(req, b);
     let k; try { k = manager.create(req.user.id, p.id, file, cwd); } catch (e) { if (e.status === 429) fail(429, 'too_many_kernels'); throw e; }
     audit(req.user.id, 'kernel.run', p.name, { path: file });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -34,12 +34,12 @@ export function kernelRouter({ manager = kernels } = {}) {
     let finished = false; res.on('close', () => { if (!finished) k.interrupt(); });
     await k.run(b.code, send); finished = true; res.end();
   });
-  route.post('/terminal/kernel/interrupt', 'terminal.use', (req, res) => {
-    const b = validate(Body, req.body); const { p, file } = target(req, b);
+  route.post('/terminal/kernel/interrupt', 'terminal.use', async (req, res) => {
+    const b = validate(Body, req.body); const { p, file } = await target(req, b);
     res.json({ interrupted: manager.get(req.user.id, p.id, file)?.interrupt() ?? false });
   });
-  route.post('/terminal/kernel/restart', 'terminal.use', (req, res) => {
-    const b = validate(Body, req.body); const { p, file } = target(req, b);
+  route.post('/terminal/kernel/restart', 'terminal.use', async (req, res) => {
+    const b = validate(Body, req.body); const { p, file } = await target(req, b);
     manager.restart(req.user.id, p.id, file); audit(req.user.id, 'kernel.restart', p.name, { path: file });
     res.json({ ok: true });
   });

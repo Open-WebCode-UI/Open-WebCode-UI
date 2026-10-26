@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
 import { defineRoutes, validate, z } from '../http.js';
 import { getSettings, saveSettings } from '../settings.js';
 import { audit } from '../audit.js';
@@ -18,13 +18,13 @@ const choices = z.object({
 });
 const body = z.union([z.object({ skip: z.literal(true) }), z.object({ skip: z.literal(false).optional(), choices })]);
 
-const state = () => {
+const state = async () => {
   const g = getSettings('general'), b = getSettings('branding');
   return {
     completed: getSettings('setup').completed,
     values: { appName: g.appName, tagline: g.tagline, primaryColor: b.primaryColor, defaultMode: b.defaultMode,
       memoryAllowed: g.memoryAllowed, coursesEnabled: g.coursesEnabled, userMcpAllowed: g.userMcpAllowed, showSessionCost: g.showSessionCost },
-    modelCount: getDb().prepare('SELECT COUNT(*) n FROM models').get().n,
+    modelCount: (await getKnex()('models').count({ n: '*' }).first()).n,
     execMode: g.execMode,
   };
 };
@@ -33,10 +33,10 @@ export function setupRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api/admin/setup');
 
-  route.get('', 'settings.write', (_req, res) => res.json(state()));
-  route.post('/complete', 'settings.write', (req, res) => {
+  route.get('', 'settings.write', async (_req, res) => res.json(await state()));
+  route.post('/complete', 'settings.write', async (req, res) => {
     const b = validate(body, req.body);
-    if (getSettings('setup').completed) return res.json(state()); // a second administrator's late submit must not overwrite the first's choices
+    if (getSettings('setup').completed) return res.json(await state()); // a second administrator's late submit must not overwrite the first's choices
     if (b.choices) {
       const c = b.choices;
       saveSettings('general', { ...getSettings('general'), appName: c.appName, tagline: c.tagline, memoryAllowed: c.memoryAllowed,
@@ -48,7 +48,7 @@ export function setupRouter() {
     }
     saveSettings('setup', { completed: true, skipped: !!b.skip, completedBy: req.user.id });
     audit(req.user.id, b.skip ? 'setup.skip' : 'setup.complete', null, b.choices ? { ...b.choices } : {});
-    res.json(state());
+    res.json(await state());
   });
   return r;
 }

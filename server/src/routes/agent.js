@@ -110,7 +110,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
   route.get('/agent/status', 'agent.plan', async (req, res) => {
     const projectId = req.query.projectId === undefined ? null : Number(req.query.projectId);
     if (projectId !== null && !Number.isInteger(projectId)) fail(400, 'invalid_project');
-    const project = projectId === null ? null : getProject({ params: { id: projectId }, user: req.user });
+    const project = projectId === null ? null : await getProject({ params: { id: projectId }, user: req.user });
     const rm = await resolveModel(req.user, getSettings('general').defaultModels.plan);
     res.json(await buildStatus({ req, project, rm, adapter: rm ? adapterFactory(rm.provider) : null }));
   });
@@ -153,7 +153,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       // Mode is authorized server-side; a client can't spoof act mode.
       if (b.mode === 'act' && !perms.has('agent.act')) { audit(req.user.id, 'agent.act_denied', null); fail(403, 'forbidden', { permission: 'agent.act' }); }
       if (!perms.has('provider.use')) fail(403, 'forbidden', { permission: 'provider.use' });
-      const project = getProject({ params: { id: b.projectId }, user: req.user });
+      const project = await getProject({ params: { id: b.projectId }, user: req.user });
       const general = getSettings('general');
       // A course exercise workspace carries the instructor's rules for this attempt. They only narrow what the learner's role allows.
       const scope = scopeOf(project.id);
@@ -193,19 +193,19 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       const start = messages.length;
       const limit = (!rm.model.auto_context && rm.model.context_size) || DEFAULT_CONTEXT_WINDOW; // automatic sizing: the real window is unknown, so estimate against the default
       const command = COMMAND_RE.exec(b.message.trim());
-      const compactSkill = enabledSkills(req.user.id).find((x) => x.action === 'compact');
+      const compactSkill = (await enabledSkills(req.user.id)).find((x) => x.action === 'compact');
       if (command?.[1].toLowerCase() === 'compact' && !compactSkill) fail(400, 'skill_disabled', { message: 'The /compact skill is turned off in your profile.' });
       const skillsOff = !!scope?.policy.toolDeny.includes('skills');
-      const skills = skillsOff ? [] : agentSkills(req.user.id);
-      const inv = command || skillsOff ? null : expandSkillInvocation(req.user.id, b.message);
+      const skills = skillsOff ? [] : await agentSkills(req.user.id);
+      const inv = command || skillsOff ? null : await expandSkillInvocation(req.user.id, b.message);
       if (!command) {
         const um = inv ? { role: 'user', content: inv.content, display: inv.display } : { role: 'user', content: b.message };
         if (att.refs.length) { um.content += att.inline; um.display = um.display ?? b.message; um.attachments = att.refs; bindToConversation(req.user.id, att.refs.map((a) => a.id), conv.id); }
         messages.push(um);
       }
       const ws = webSearchFor(req, conv, b.webSearch, perms, deps);
-      const memScopes = perms.has('memory.use') ? activeScopes(req.user.id, project.id) : [];
-      const system = systemPromptFor(b.mode, req.user[`prompt_${b.mode}`], { approvedPlan: b.approvedPlan, effort: b.effort, personaName: getSettings('branding').personaName, skills, memory: memoryPrompt(memScopes, req.user.id, project.id, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') });
+      const memScopes = perms.has('memory.use') ? await activeScopes(req.user.id, project.id) : [];
+      const system = systemPromptFor(b.mode, req.user[`prompt_${b.mode}`], { approvedPlan: b.approvedPlan, effort: b.effort, personaName: getSettings('branding').personaName, skills, memory: await memoryPrompt(memScopes, req.user.id, project.id, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') });
       const adapter = adapterFactory(rm.provider);
 
       const emit = sse(res);
@@ -315,12 +315,12 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       const att = prepareForMessage(req.user.id, b.attachments, { caps: uploadCaps(rm), providerType: rm.provider.type });
       const conv = getConversation(req, 'chat', null, b.conversationId, b.message, type, courseId);
       const messages = loadMessages(conv.id), start = messages.length;
-      const inv = expandSkillInvocation(req.user.id, b.message, 'chat');
+      const inv = await expandSkillInvocation(req.user.id, b.message, 'chat');
       const um = inv ? { role: 'user', content: inv.content, display: inv.display } : { role: 'user', content: b.message };
       if (att.refs.length) { um.content += att.inline; um.display = um.display ?? b.message; um.attachments = att.refs; bindToConversation(req.user.id, att.refs.map((a) => a.id), conv.id); }
       messages.push(um);
       const ws = webSearchFor(req, conv, b.webSearch, perms, deps);
-      const memScopes = perms.has('memory.use') ? activeScopes(req.user.id, null).filter((s) => s === 'user') : []; // chats have no project, so only user memory
+      const memScopes = perms.has('memory.use') ? (await activeScopes(req.user.id, null)).filter((s) => s === 'user') : []; // chats have no project, so only user memory
       const courseTools = type === 'course' ? createCourseTools({ userId: req.user.id, courseId }) : null;
       const emit = sse(res), abort = new AbortController();
       res.on('close', () => abort.abort());
@@ -328,7 +328,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         emit({ type: 'start', conversationId: conv.id });
         if (ws.notice) emit({ type: 'notice', text: ws.notice });
         await runAgentTurn({
-          adapter: adapterFactory(rm.provider), model: rm.model.model_id, system: systemPromptFor(CHAT_PROMPT[type][0], req.user[CHAT_PROMPT[type][1]], { effort: b.effort, personaName: getSettings('branding').personaName, memory: memoryPrompt(memScopes, req.user.id, null, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') + (courseTools ? courseDesignContext(courseId) : '') }), messages, prepare: hydrator(req.user.id),
+          adapter: adapterFactory(rm.provider), model: rm.model.model_id, system: systemPromptFor(CHAT_PROMPT[type][0], req.user[CHAT_PROMPT[type][1]], { effort: b.effort, personaName: getSettings('branding').personaName, memory: await memoryPrompt(memScopes, req.user.id, null, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') + (courseTools ? courseDesignContext(courseId) : '') }), messages, prepare: hydrator(req.user.id),
           ctx: { agentMode: 'chat', execMode: 'files_only', permissions: new Set(), userId: req.user.id, attachments: { saveOutput: (m, name) => saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: getSettings('general').maxAttachmentMb * 1024 * 1024 }) }, webSearch: ws.ctx, courseDesign: courseTools, memory: memoryContext(req.user.id, null, memScopes, (m) => emit({ type: 'memory_saved', ...m })), onSearch: (query) => audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }) }, emit, signal: abort.signal, maxIterations: courseTools ? 20 : ws.ctx || memScopes.length ? 6 : 1, maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking),
           onUsage: (u) => recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'chat', ...u }),
         });

@@ -23,7 +23,8 @@ const toDef = (server, tool, name) => {
 
 // Connects to every MCP server the user has active and exposes their tools to one agent turn. Failures are reported, never fatal.
 // Returns { defs: Map, call(name,args,signal), close(), problems: [{server,error}] }.
-export async function openToolset(userId, { deps = {}, servers = activeServers(userId) } = {}) {
+export async function openToolset(userId, { deps = {}, servers } = {}) {
+  servers ??= await activeServers(userId);
   const defs = new Map(), clients = new Map(), problems = [];
   await Promise.all(servers.map(async (row) => {
     const c = clientFor(row, deps);
