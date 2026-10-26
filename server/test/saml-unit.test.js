@@ -31,13 +31,13 @@ describe('identity: NameID is opaque; email/first/last come from attributes', ()
     expect(id).toMatchObject({ uniqueId: 'k3j2h1g0-opaque', email: 'a@b.com', firstName: 'Ann', lastName: 'Lee' });
     expect(id.displayName).toBe('Ann Lee'); // never the NameID
   });
-  it('same NameID -> same account; attributes refresh on later logins', () => {
+  it('same NameID -> same account; attributes refresh on later logins', async () => {
     const a = resolveIdentity({ nameID: 'n1', nameIDFormat: NAMEID.persistent, attributes: attrs }, cfg());
-    const u1 = upsertSamlUser('idp', a);
-    const u2 = upsertSamlUser('idp', resolveIdentity({ nameID: 'n1', attributes: { ...attrs, email: 'new@b.com', lastName: 'Kim' } }, cfg()));
+    const u1 = await upsertSamlUser('idp', a);
+    const u2 = await upsertSamlUser('idp', resolveIdentity({ nameID: 'n1', attributes: { ...attrs, email: 'new@b.com', lastName: 'Kim' } }, cfg()));
     expect(u2).toBe(u1);
     expect(getDb().prepare('SELECT email, last_name FROM users WHERE id=?').get(u1)).toEqual({ email: 'new@b.com', last_name: 'Kim' });
-    expect(upsertSamlUser('other-idp', a)).not.toBe(u1);
+    expect(await upsertSamlUser('other-idp', a)).not.toBe(u1);
   });
   it('resolves common claim URIs / aliases and admin-custom attribute names', () => {
     const id = resolveIdentity({ nameID: 'x', attributes: {
@@ -68,22 +68,22 @@ describe('identity: NameID is opaque; email/first/last come from attributes', ()
 });
 
 describe('group -> role mapping', () => {
-  it('maps groups to roles, re-syncs on every login, and falls back to default role', () => {
+  it('maps groups to roles, re-syncs on every login, and falls back to default role', async () => {
     const dev = getDb().prepare("SELECT id FROM roles WHERE name='developer'").get().id;
     const adm = getDb().prepare("SELECT id FROM roles WHERE name='administrator'").get().id;
     getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('devs', dev);
     getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('Admins', adm);
-    const uid = upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
-    expect(syncRolesFromGroups(uid, ['devs', 'Admins'], cfg()).sort()).toEqual(['administrator', 'developer']);
-    expect(syncRolesFromGroups(uid, ['devs'], cfg())).toEqual(['developer']); // removed group drops the role
-    expect(syncRolesFromGroups(uid, ['nothing'], cfg())).toEqual([]); // no mapping -> no access
-    expect(syncRolesFromGroups(uid, ['nothing'], { ...cfg(), defaultRoleId: dev })).toEqual(['developer']);
+    const uid = await upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
+    expect((await syncRolesFromGroups(uid, ['devs', 'Admins'], cfg())).sort()).toEqual(['administrator', 'developer']);
+    expect(await syncRolesFromGroups(uid, ['devs'], cfg())).toEqual(['developer']); // removed group drops the role
+    expect(await syncRolesFromGroups(uid, ['nothing'], cfg())).toEqual([]); // no mapping -> no access
+    expect(await syncRolesFromGroups(uid, ['nothing'], { ...cfg(), defaultRoleId: dev })).toEqual(['developer']);
   });
-  it('does not touch manually assigned roles', () => {
+  it('does not touch manually assigned roles', async () => {
     const dev = getDb().prepare("SELECT id FROM roles WHERE name='developer'").get().id;
-    const uid = upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
+    const uid = await upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
     getDb().prepare("INSERT INTO user_roles VALUES (?,?,'manual')").run(uid, dev);
-    syncRolesFromGroups(uid, [], cfg());
+    await syncRolesFromGroups(uid, [], cfg());
     expect(getDb().prepare('SELECT COUNT(*) c FROM user_roles WHERE user_id=?').get(uid).c).toBe(1);
   });
 });

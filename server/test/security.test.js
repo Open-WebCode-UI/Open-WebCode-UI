@@ -38,23 +38,23 @@ describe('headers & CSRF', () => {
 });
 
 describe('sessions', () => {
-  it('rotation revokes the old id; idle and absolute timeouts and revocation end the session', () => {
+  it('rotation revokes the old id; idle and absolute timeouts and revocation end the session', async () => {
     const id = login(app, { username: 'sessuser' }).id;
-    const s = createSession(id);
-    const n = rotateSession(s.id);
-    expect(loadSession(s.id)).toBeNull(); expect(loadSession(n.id)).not.toBeNull();
+    const s = await createSession(id);
+    const n = await rotateSession(s.id);
+    expect(await loadSession(s.id)).toBeNull(); expect(await loadSession(n.id)).not.toBeNull();
     getDb().prepare('UPDATE sessions SET last_seen=last_seen-100000 WHERE id=?').run(n.id);
-    expect(loadSession(n.id)).toBeNull(); // idle timeout
-    const a = createSession(id); getDb().prepare('UPDATE sessions SET created_at=created_at-999999 WHERE id=?').run(a.id);
-    expect(loadSession(a.id)).toBeNull(); // absolute timeout
-    const b = createSession(id); getDb().prepare('UPDATE users SET disabled=1 WHERE id=?').run(id);
-    expect(loadSession(b.id)).toBeNull(); // disabled users lose sessions
+    expect(await loadSession(n.id)).toBeNull(); // idle timeout
+    const a = await createSession(id); getDb().prepare('UPDATE sessions SET created_at=created_at-999999 WHERE id=?').run(a.id);
+    expect(await loadSession(a.id)).toBeNull(); // absolute timeout
+    const b = await createSession(id); getDb().prepare('UPDATE users SET disabled=1 WHERE id=?').run(id);
+    expect(await loadSession(b.id)).toBeNull(); // disabled users lose sessions
   });
   it('"sign out all sessions" revokes others and keeps the current one', async () => {
     const u = login(app, { username: 'multisess' });
-    const other = createSession(u.id);
+    const other = await createSession(u.id);
     expect((await u.post('/api/auth/sessions/revoke-all')).status).toBe(200);
-    expect(loadSession(other.id)).toBeNull();
+    expect(await loadSession(other.id)).toBeNull();
     expect((await u.get('/api/auth/me')).status).toBe(200);
   });
   it('session cookie is HttpOnly + SameSite=Lax', async () => {

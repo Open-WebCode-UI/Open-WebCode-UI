@@ -1,4 +1,5 @@
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx } from '../db/dialect.js';
 import { randomToken } from '../crypto.js';
 import { config, cookieSecure } from '../config.js';
 import { getSettings } from '../settings.js';
@@ -15,11 +16,12 @@ export function parseCookies(header = '') {
   return out;
 }
 
-export function createSession(userId, { stage = 'full', req, mfaSatisfied = false, stepup = false } = {}) {
+export async function createSession(userId, { stage = 'full', req, mfaSatisfied = false, stepup = false } = {}) {
   const id = randomToken(32), csrf = randomToken(24), t = now();
-  getDb().prepare(`INSERT INTO sessions (id,user_id,csrf,stage,created_at,last_seen,auth_time,stepup_at,mfa_satisfied,ip,ua)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, userId, csrf, stage, t, t, t, stepup ? t : 0, mfaSatisfied ? 1 : 0,
-    req?.ip || null, (req?.get?.('user-agent') || '').slice(0, 200));
+  await getKnex()('sessions').insert({
+    id, user_id: userId, csrf, stage, created_at: t, last_seen: t, auth_time: t, stepup_at: stepup ? t : 0, mfa_satisfied: mfaSatisfied ? 1 : 0,
+    ip: req?.ip || null, ua: (req?.get?.('user-agent') || '').slice(0, 200),
+  });
   return { id, csrf };
 }
 
@@ -31,42 +33,47 @@ export function setSessionCookie(res, id) {
 }
 export const clearSessionCookie = (res) => res.clearCookie(cookieName(), { path: '/', secure: cookieSecure(), httpOnly: true, sameSite: 'lax' });
 
-export function revokeSession(id) { getDb().prepare('UPDATE sessions SET revoked=1 WHERE id=?').run(id); }
-export function revokeUserSessions(userId, exceptId = null) {
-  getDb().prepare('UPDATE sessions SET revoked=1 WHERE user_id=? AND id IS NOT ?').run(userId, exceptId);
+export async function revokeSession(id) { await getKnex()('sessions').where({ id }).update({ revoked: 1 }); }
+export async function revokeUserSessions(userId, exceptId = null) {
+  await getKnex()('sessions').where({ user_id: userId }).modify((q) => { if (exceptId != null) q.whereNot({ id: exceptId }); }).update({ revoked: 1 });
 }
 
 // Rotate the session id (fixation defense) preserving state; returns new id/csrf.
-export function rotateSession(oldId) {
-  const db = getDb();
-  const s = db.prepare('SELECT * FROM sessions WHERE id=?').get(oldId);
+export async function rotateSession(oldId) {
+  const k = getKnex();
+  const s = await k('sessions').where({ id: oldId }).first();
   const id = randomToken(32), csrf = randomToken(24);
-  db.prepare('UPDATE sessions SET revoked=1 WHERE id=?').run(oldId);
-  db.prepare(`INSERT INTO sessions (id,user_id,csrf,stage,created_at,last_seen,auth_time,stepup_at,mfa_satisfied,ip,ua)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(id, s.user_id, csrf, s.stage, s.created_at, now(), s.auth_time, s.stepup_at, s.mfa_satisfied, s.ip, s.ua);
+  await trx(k, async (t) => {
+    await t('sessions').where({ id: oldId }).update({ revoked: 1 });
+    await t('sessions').insert({
+      id, user_id: s.user_id, csrf, stage: s.stage, created_at: s.created_at, last_seen: now(), auth_time: s.auth_time, stepup_at: s.stepup_at, mfa_satisfied: s.mfa_satisfied, ip: s.ip, ua: s.ua,
+    });
+  });
   return { id, csrf };
 }
 
-export function loadSession(id) {
+export async function loadSession(id) {
   if (!id) return null;
-  const db = getDb();
-  const s = db.prepare('SELECT * FROM sessions WHERE id=?').get(id);
+  const k = getKnex();
+  const s = await k('sessions').where({ id }).first();
   if (!s || s.revoked) return null;
   const sec = getSettings('security'), t = now();
   if (t - s.last_seen > sec.sessionIdleSec || t - s.created_at > sec.sessionAbsoluteSec) {
-    revokeSession(id);
+    await revokeSession(id);
     return null;
   }
-  const user = db.prepare('SELECT * FROM users WHERE id=?').get(s.user_id);
+  const user = await k('users').where({ id: s.user_id }).first();
   if (!user || user.disabled) return null;
-  if (t - s.last_seen > 30) db.prepare('UPDATE sessions SET last_seen=? WHERE id=?').run(t, id);
+  if (t - s.last_seen > 30) await k('sessions').where({ id }).update({ last_seen: t });
   return { ...s, user };
 }
 
-export function sessionMiddleware(req, _res, next) {
+export async function sessionMiddleware(req, _res, next) {
   const sid = parseCookies(req.headers.cookie)[cookieName()];
-  req.session = loadSession(sid);
-  req.user = req.session?.user || null;
+  try {
+    req.session = await loadSession(sid);
+    req.user = req.session?.user || null;
+  } catch (e) { return next(e); }
   next();
 }
 

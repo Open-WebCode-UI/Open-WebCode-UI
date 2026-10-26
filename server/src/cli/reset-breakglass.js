@@ -8,7 +8,7 @@ import { audit } from '../audit.js';
 import { createLocalUser, hashPassword, checkPassword } from '../users.js';
 import { resetMfa } from '../auth/mfa.js';
 
-export function resetBreakGlass({ password, resetMfaToo = false, username = 'breakglass' } = {}) {
+export async function resetBreakGlass({ password, resetMfaToo = false, username = 'breakglass' } = {}) {
   const db = getDb();
   const pw = password || randomToken(15);
   let u = db.prepare("SELECT * FROM users WHERE source='local' AND username=?").get(username);
@@ -23,7 +23,7 @@ export function resetBreakGlass({ password, resetMfaToo = false, username = 'bre
   const admin = db.prepare("SELECT id FROM roles WHERE name='administrator'").get().id;
   db.prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id, source) VALUES (?,?,'manual')").run(u.id, admin);
   db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(u.id);
-  if (resetMfaToo) resetMfa(u.id);
+  if (resetMfaToo) await resetMfa(u.id);
   audit(null, 'cli.breakglass_reset', username, { mfaReset: resetMfaToo });
   return { password: pw, created: false, id: u.id };
 }
@@ -32,7 +32,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { config } = await import('../config.js');
   const { initDb } = await import('../db/index.js');
   initDb(config.dbFile);
-  const r = resetBreakGlass({ password: config.breakGlassPassword, resetMfaToo: process.argv.includes('--reset-mfa') });
+  const r = await resetBreakGlass({ password: config.breakGlassPassword, resetMfaToo: process.argv.includes('--reset-mfa') });
   console.log(`\nBreak-glass account ${r.created ? 'created' : 'reset'} (database: ${config.dbFile}).`);
   console.log('  username: breakglass');
   console.log(config.breakGlassPassword ? '  password: (the BREAKGLASS_PASSWORD you supplied)' : `  password: ${r.password}   (shown once; change required at next sign-in)`);

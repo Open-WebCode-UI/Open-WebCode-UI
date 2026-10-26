@@ -194,7 +194,7 @@ describe('terminal WebSocket', () => {
     expect(c.ws.readyState).toBeGreaterThanOrEqual(2); expect(c.msgs.some((m) => m.type === 'closed')).toBe(true); expect(mgr.get(term)).toBeNull();
   });
   it('ends the connection and the shell when the login session is revoked', async () => {
-    const c = await connect(term); await sleep(100); revokeUserSessions(user.id); await sleep(400);
+    const c = await connect(term); await sleep(100); await revokeUserSessions(user.id); await sleep(400);
     expect(c.ws.readyState).toBeGreaterThanOrEqual(2); expect(mgr.get(term)).toBeNull();
   });
   it('ignores malformed and oversized input', async () => {

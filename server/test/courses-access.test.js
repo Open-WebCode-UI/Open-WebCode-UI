@@ -48,9 +48,9 @@ describe('course access', () => {
   it('enrolls through a SAML group persisted at login', async () => {
     const c = mkCourse(); enroll(c, 'saml_group', 'cs101');
     expect(await canLearn(learner.id, c)).toBe(false);
-    syncRolesFromGroups(learner.id, ['cs101'], {});
+    await syncRolesFromGroups(learner.id, ['cs101'], {});
     expect(await canLearn(learner.id, c)).toBe(true);
-    syncRolesFromGroups(learner.id, ['other'], {});
+    await syncRolesFromGroups(learner.id, ['other'], {});
     expect(await canLearn(learner.id, c)).toBe(false);
   });
   it('enrolled users without course.learn cannot take the course', async () => {

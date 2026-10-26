@@ -25,7 +25,7 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
     if (url.pathname !== '/api/terminal/ws') return;
     const reject = (code, text) => { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
     if (!originOk(req)) return reject(403, 'Forbidden');
-    const sess = loadSession(parseCookies(req.headers.cookie)[cookieName()]);
+    const sess = await loadSession(parseCookies(req.headers.cookie)[cookieName()]);
     if (!sess || sess.stage !== 'full') return reject(401, 'Unauthorized');
     const term = manager.get(url.searchParams.get('id') || '');
     const perms = await permsFor(sess.user.id, term?.projectId).catch(() => null);
@@ -49,7 +49,7 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
     });
     // Re-validate regularly: revoked session, disabled user, lost permission, or shell mode switched off all end the connection.
     const timer = setInterval(async () => {
-      const s = loadSession(sess.id), perms = s && await permsFor(s.user.id, term.projectId).catch(() => null);
+      const s = await loadSession(sess.id), perms = s && await permsFor(s.user.id, term.projectId).catch(() => null);
       if (s && !perms) return; // could not check this time (database error): keep the connection, try again at the next sweep
       const ok = s && s.stage === 'full' && shellEnabled() && (term.kind === 'agent' ? perms.has('agent.shell.run') || perms.has('terminal.use') : perms.has('terminal.use'));
       if (!ok) { send({ type: 'closed', reason: 'access_revoked' }); ws.close(4401, 'access revoked'); if (term.kind === 'user') manager.close(term.id); }

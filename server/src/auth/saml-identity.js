@@ -1,5 +1,6 @@
 import { HttpError } from '../http.js';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx, insertId } from '../db/dialect.js';
 import { NAMEID } from '../settings.js';
 
 const ALIASES = {
@@ -61,31 +62,30 @@ export function resolveIdentity(profile, cfg) {
   return { uniqueId, email, firstName, lastName, displayName, groups: extractGroups(attrs, cfg.attrGroups), nameIdFormat: fmt, attrs };
 }
 
-export function upsertSamlUser(idpEntityId, id) {
-  const db = getDb();
-  const u = db.prepare("SELECT * FROM users WHERE source='saml' AND idp_entity_id=? AND name_id=?").get(idpEntityId, id.uniqueId);
+export async function upsertSamlUser(idpEntityId, id) {
+  const k = getKnex();
+  const u = await k('users').where({ source: 'saml', idp_entity_id: idpEntityId, name_id: id.uniqueId }).first('id');
+  const profile = { email: id.email, first_name: id.firstName, last_name: id.lastName, display_name: id.displayName };
   if (u) {
-    db.prepare('UPDATE users SET email=?, first_name=?, last_name=?, display_name=? WHERE id=?')
-      .run(id.email, id.firstName, id.lastName, id.displayName, u.id);
+    await k('users').where({ id: u.id }).update(profile);
     return u.id;
   }
-  const r = db.prepare(`INSERT INTO users (source, email, first_name, last_name, display_name, idp_entity_id, name_id)
-    VALUES ('saml',?,?,?,?,?,?)`).run(id.email, id.firstName, id.lastName, id.displayName, idpEntityId, id.uniqueId);
-  return Number(r.lastInsertRowid);
+  return insertId(k('users'), { source: 'saml', ...profile, idp_entity_id: idpEntityId, name_id: id.uniqueId });
 }
 
 // Groups -> roles (re-synced at every login). Returns role names granted via SAML.
-export function syncRolesFromGroups(userId, groups, cfg) {
-  const db = getDb();
+export async function syncRolesFromGroups(userId, groups, cfg) {
+  const k = getKnex();
   const roleIds = new Set();
-  db.prepare('DELETE FROM user_saml_groups WHERE user_id=?').run(userId);
-  for (const g of groups) db.prepare('INSERT OR IGNORE INTO user_saml_groups VALUES (?,?)').run(userId, g);
-  const q = db.prepare('SELECT role_id FROM group_role_map WHERE group_value=?');
-  for (const g of groups) for (const r of q.all(g)) roleIds.add(r.role_id);
-  if (!roleIds.size && cfg.defaultRoleId) roleIds.add(cfg.defaultRoleId);
-  db.prepare("DELETE FROM user_roles WHERE user_id=? AND source='saml'").run(userId);
-  for (const rid of roleIds) db.prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id, source) VALUES (?,?,'saml')").run(userId, rid);
-  return db.prepare("SELECT r.name FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=? AND ur.source='saml'").all(userId).map((r) => r.name);
+  await trx(k, async (t) => {
+    await t('user_saml_groups').where({ user_id: userId }).del();
+    if (groups.length) await t('user_saml_groups').insert(groups.map((g) => ({ user_id: userId, group_value: g }))).onConflict(['user_id', 'group_value']).ignore();
+    if (groups.length) for (const r of await t('group_role_map').whereIn('group_value', groups).select('role_id')) roleIds.add(r.role_id);
+    if (!roleIds.size && cfg.defaultRoleId) roleIds.add(cfg.defaultRoleId);
+    await t('user_roles').where({ user_id: userId, source: 'saml' }).del();
+    if (roleIds.size) await t('user_roles').insert([...roleIds].map((rid) => ({ user_id: userId, role_id: rid, source: 'saml' }))).onConflict(['user_id', 'role_id', 'source']).ignore();
+  });
+  return (await k('user_roles as ur').join('roles as r', 'r.id', 'ur.role_id').where({ 'ur.user_id': userId, 'ur.source': 'saml' }).select('r.name')).map((r) => r.name);
 }
 
 // Assertion-level MFA policy check. `ctx`: { authnContext, authnInstant (ms), attrs }.

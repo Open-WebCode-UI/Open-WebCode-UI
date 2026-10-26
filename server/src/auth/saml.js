@@ -1,7 +1,8 @@
 import express from 'express';
 import { SAML, ValidateInResponseTo } from '@node-saml/node-saml';
 import selfsigned from 'selfsigned';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { insertId } from '../db/dialect.js';
 import { config } from '../config.js';
 import { getSettings, saveSettings } from '../settings.js';
 import { randomToken, encrypt, decrypt } from '../crypto.js';
@@ -17,18 +18,18 @@ const now = () => Math.floor(Date.now() / 1000);
 export const acsUrl = () => `${config.baseUrl}/auth/saml/acs`;
 export const spEntityId = (cfg) => cfg.spEntityId || `${config.baseUrl}/auth/saml/metadata`;
 
-// Request-ID cache for InResponseTo validation, shared via SQLite so it survives restarts/instances.
+// Request-ID cache for InResponseTo validation, kept in the database so it survives restarts and works across instances.
 const dbCache = {
   async saveAsync(key, value) {
-    getDb().prepare('INSERT OR REPLACE INTO saml_requests (id,value,expires) VALUES (?,?,?)').run(key, value, now() + 600);
+    await getKnex()('saml_requests').insert({ id: key, value, expires: now() + 600 }).onConflict('id').merge();
     return { value, createdAt: Date.now() };
   },
   async getAsync(key) {
-    const r = getDb().prepare('SELECT value FROM saml_requests WHERE id=? AND expires>?').get(key, now());
+    const r = await getKnex()('saml_requests').where({ id: key }).where('expires', '>', now()).first('value');
     return r ? r.value : null;
   },
   async removeAsync(key) {
-    if (key) getDb().prepare('DELETE FROM saml_requests WHERE id=?').run(key);
+    if (key) await getKnex()('saml_requests').where({ id: key }).del();
     return key;
   },
 };
@@ -93,7 +94,7 @@ export function samlRouter() {
   route.get('/login', 'public', rateLimit('saml-login', 30, 60_000), async (req, res, next) => {
     try {
       const cfg = getSettings('saml');
-      const db = getDb();
+      const k = getKnex();
       let target = safeRelay(req.query.relay);
       let forceAuthn = false;
       if (req.query.test === '1') {
@@ -103,8 +104,8 @@ export function samlRouter() {
         target = `stepup:${req.session.id}:${target}`; forceAuthn = true;
       }
       const state = randomToken(18);
-      db.prepare('DELETE FROM relay_states WHERE expires<?').run(now());
-      db.prepare('INSERT INTO relay_states (id,target,expires) VALUES (?,?,?)').run(state, target, now() + 600);
+      await k('relay_states').where('expires', '<', now()).del();
+      await k('relay_states').insert({ id: state, target, expires: now() + 600 });
       const url = await buildSaml(cfg, { forceAuthn }).getAuthorizeUrlAsync(state, undefined, {});
       res.redirect(url);
     } catch (e) { next(e); }
@@ -112,15 +113,15 @@ export function samlRouter() {
 
   // IdP posts cross-site, so Origin/CSRF-token checks don't apply; trust comes from signature + InResponseTo.
   route.post('/acs', 'public', { csrfExempt: true }, express.urlencoded({ extended: false, limit: '512kb' }), rateLimit('saml-acs', 60, 60_000), async (req, res, next) => {
-    const cfg = getSettings('saml'), sec = getSettings('security'), db = getDb();
+    const cfg = getSettings('saml'), sec = getSettings('security'), k = getKnex();
     const deny = (code, extra = {}) => {
       audit(null, 'auth.saml.denied', code, { ...extra, ip: req.ip });
       res.status(403).type('html').send(`<!doctype html><meta charset=utf-8><title>Sign-in failed</title><body style="font-family:sans-serif;max-width:40em;margin:4em auto"><h2>Sign-in failed</h2><p>${escapeHtml(code)}${extra.missing ? `: ${escapeHtml(extra.missing.join(', '))}` : ''}</p><p><a href="/">Back</a></p>`);
     };
     try {
-      const relay = db.prepare('SELECT * FROM relay_states WHERE id=? AND expires>?').get(String(req.body.RelayState || ''), now());
+      const relay = await k('relay_states').where({ id: String(req.body.RelayState || '') }).where('expires', '>', now()).first();
       if (!relay) return deny('invalid_relay_state');
-      db.prepare('DELETE FROM relay_states WHERE id=?').run(relay.id);
+      await k('relay_states').where({ id: relay.id }).del();
 
       const saml = buildSaml(cfg);
       let profile;
@@ -130,9 +131,10 @@ export function samlRouter() {
 
       const assertionId = profile.ID;
       if (assertionId) {
-        if (db.prepare('SELECT 1 FROM saml_replay WHERE id=?').get(assertionId)) return deny('replayed_assertion');
-        db.prepare('INSERT INTO saml_replay (id,expires) VALUES (?,?)').run(assertionId, now() + 3600);
-        db.prepare('DELETE FROM saml_replay WHERE expires<?').run(now());
+        if (await k('saml_replay').where({ id: assertionId }).first('id')) return deny('replayed_assertion');
+        try { await k('saml_replay').insert({ id: assertionId, expires: now() + 3600 }); }
+        catch { return deny('replayed_assertion'); } // a concurrent use of the same assertion lost the race on the primary key
+        await k('saml_replay').where('expires', '<', now()).del();
       }
       let id;
       try { id = resolveIdentity(profile, cfg); }
@@ -141,11 +143,11 @@ export function samlRouter() {
 
       if (relay.target === '__test__') return renderTest(res, profile, { id, ctx }, null);
 
-      const uid = upsertSamlUser(cfg.idpEntityId || profile.issuer, id);
-      const user = db.prepare('SELECT * FROM users WHERE id=?').get(uid);
+      const uid = await upsertSamlUser(cfg.idpEntityId || profile.issuer, id);
+      const user = await k('users').where({ id: uid }).first();
       if (user.disabled) return deny('account_disabled');
-      const roles = syncRolesFromGroups(uid, id.groups, cfg);
-      if (!roles.length && !db.prepare('SELECT 1 FROM user_roles WHERE user_id=?').get(uid)) return deny('no_mapped_role', { groups: id.groups });
+      const roles = await syncRolesFromGroups(uid, id.groups, cfg);
+      if (!roles.length && !(await k('user_roles').where({ user_id: uid }).first('role_id'))) return deny('no_mapped_role', { groups: id.groups });
 
       const required = mfaRequiredFor(uid);
       const mfa = checkSamlMfa(ctx, sec, required);
@@ -153,14 +155,14 @@ export function samlRouter() {
 
       if (relay.target.startsWith('stepup:')) {
         const [, sid, ...rest] = relay.target.split(':');
-        const s = db.prepare('SELECT * FROM sessions WHERE id=? AND revoked=0').get(sid);
+        const s = await k('sessions').where({ id: sid, revoked: 0 }).first();
         if (!s || s.user_id !== uid) return deny('stepup_user_mismatch');
-        db.prepare('UPDATE sessions SET stepup_at=? WHERE id=?').run(now(), sid);
+        await k('sessions').where({ id: sid }).update({ stepup_at: now() });
         audit(uid, 'auth.saml.stepup', null);
         return res.redirect(safeRelay(rest.join(':')));
       }
-      const s = createSession(uid, { stage: 'full', req, mfaSatisfied: required, stepup: true });
-      db.prepare('UPDATE users SET last_login=? WHERE id=?').run(now(), uid);
+      const s = await createSession(uid, { stage: 'full', req, mfaSatisfied: required, stepup: true });
+      await k('users').where({ id: uid }).update({ last_login: now() });
       setSessionCookie(res, s.id);
       audit(uid, 'auth.saml.login', null, { roles, nameIdFormat: id.nameIdFormat, authnContext: ctx.authnContext, ip: req.ip });
       res.redirect(safeRelay(relay.target));

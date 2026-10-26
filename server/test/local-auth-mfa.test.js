@@ -42,7 +42,7 @@ describe('local (break-glass) authentication', () => {
     // recovery code works once
     const ok = await s.post('/api/auth/mfa/verify').send({ code: e.recovery[0] });
     expect(ok.status).toBe(200); expect(ok.body.stage).toBe('full');
-    expect(useRecoveryCode(1, e.recovery[0])).toBe(false);
+    expect(await useRecoveryCode(1, e.recovery[0])).toBe(false);
     const r2 = await doLogin();
     expect((await authed(cookieOf(r2), r2.body.csrf).post('/api/auth/mfa/verify').send({ code: e.recovery[0] })).status).toBe(401);
   });

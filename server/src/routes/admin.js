@@ -264,7 +264,7 @@ export function adminRouter({ webSearch = {} } = {}) {
     audit(actor(req), 'user.create', b.username, { roles: b.roles, breakGlass: b.isBreakGlass });
     res.status(201).json(userDto(getDb().prepare('SELECT * FROM users WHERE id=?').get(id)));
   });
-  route.put('/admin/users/:id', { perm: 'user.write', stepup: true }, (req, res) => {
+  route.put('/admin/users/:id', { perm: 'user.write', stepup: true }, async (req, res) => {
     const db = getDb(), u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) fail(404, 'not_found');
     const b = validate(z.object({
@@ -284,7 +284,7 @@ export function adminRouter({ webSearch = {} } = {}) {
       .run(b.email ?? null, b.firstName ?? null, b.lastName ?? null, b.disabled == null ? null : +b.disabled,
         b.isBreakGlass == null ? null : +b.isBreakGlass, b.mustChange == null ? null : +b.mustChange, u.id);
     if (b.roles) setUserRoles(u.id, b.roles, 'manual');
-    if (b.disabled || b.password) { revokeUserSessions(u.id); terminals.killForUser(u.id); kernels.killForUser(u.id); }
+    if (b.disabled || b.password) { await revokeUserSessions(u.id); terminals.killForUser(u.id); kernels.killForUser(u.id); }
     audit(actor(req), 'user.update', u.username || u.email, { fields: Object.keys(b).filter((k) => k !== 'password') });
     res.json(userDto(db.prepare('SELECT * FROM users WHERE id=?').get(u.id)));
   });
@@ -298,10 +298,10 @@ export function adminRouter({ webSearch = {} } = {}) {
     audit(actor(req), 'user.delete', u.username || u.email);
     res.json({ ok: true });
   });
-  route.post('/admin/users/:id/reset-mfa', { perm: 'mfa.reset', stepup: true }, (req, res) => {
+  route.post('/admin/users/:id/reset-mfa', { perm: 'mfa.reset', stepup: true }, async (req, res) => {
     const u = getDb().prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) fail(404, 'not_found');
-    resetMfa(u.id);
+    await resetMfa(u.id);
     audit(actor(req), 'mfa.reset', u.username || u.email);
     res.json({ ok: true });
   });
