@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx, insertId } from '../db/dialect.js';
 import { defineRoutes, fail, validate, z } from '../http.js';
 import { audit } from '../audit.js';
 import { canAuthor, canLearn } from '../courses/access.js';
@@ -61,196 +62,211 @@ const assessmentDto = (a) => ({ id: a.id, courseId: a.course_id, pageId: a.page_
 export function assessmentsRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api');
-  const db = () => getDb();
+  const k = () => getKnex();
+  const intParam = (v) => { const n = Number(v); return Number.isInteger(n) ? n : null; };
 
-  const getAssessment = (req, courseId) => db().prepare('SELECT * FROM assessments WHERE id=? AND course_id=?').get(req.params.aid, courseId) || fail(404, 'assessment_not_found');
-  const questionsOf = (aid) => db().prepare('SELECT * FROM questions WHERE assessment_id=? ORDER BY position, id').all(aid);
+  const getAssessment = async (req, courseId) => {
+    const id = intParam(req.params.aid);
+    return (id !== null && await k()('assessments').where({ id, course_id: courseId }).first()) || fail(404, 'assessment_not_found');
+  };
+  const questionsOf = (aid) => k()('questions').where({ assessment_id: aid }).orderBy([{ column: 'position' }, { column: 'id' }]);
   // Questions are fixed once anyone has attempted the assessment, so past scores always mean what they said.
   // A question that needs grading cannot join an unscored assessment or one with a pass score.
   const checkFits = (a, b) => { if ((a.mode === 'unscored' || a.pass_score != null) && needsGrader(b.type, b.type === 'exercise' ? b.spec.rubric.length : 0)) fail(409, 'open_ended_questions'); };
-  const lockIfAttempted = (aid) => { if (db().prepare('SELECT 1 FROM attempts WHERE assessment_id=?').get(aid)) fail(409, 'assessment_has_attempts'); };
+  const lockIfAttempted = async (aid) => { if (await k()('attempts').where({ assessment_id: aid }).first('id')) fail(409, 'assessment_has_attempts'); };
 
   // ---------- Authoring
-  route.get('/courses/:id/assessments/manage', 'course.author', (req, res) => {
-    const c = authorCourse(req);
-    res.json(db().prepare('SELECT * FROM assessments WHERE course_id=? ORDER BY id').all(c.id)
-      .map((a) => ({ ...assessmentDto(a), locked: !!db().prepare('SELECT 1 FROM attempts WHERE assessment_id=?').get(a.id), questions: questionsOf(a.id).map(authorQuestion) })));
+  route.get('/courses/:id/assessments/manage', 'course.author', async (req, res) => {
+    const c = await authorCourse(req);
+    const rows = await k()('assessments').where({ course_id: c.id }).orderBy('id');
+    res.json(await Promise.all(rows.map(async (a) => ({ ...assessmentDto(a), locked: !!(await k()('attempts').where({ assessment_id: a.id }).first('id')), questions: (await questionsOf(a.id)).map(authorQuestion) }))));
   });
-  route.post('/courses/:id/assessments', 'course.author', (req, res) => {
-    const c = authorCourse(req); const b = validate(assessmentBody, req.body); if (!b.title) fail(400, 'validation_error', { issues: [{ path: 'title', message: 'required' }] }); const st = assessmentSettings(b, []);
-    if (b.moduleId != null && !moduleBelongsTo(c.id, b.moduleId)) fail(404, 'module_not_found');
-    const { assessmentId: id } = createAssessmentPage(c.id, { moduleId: b.moduleId, title: b.title, mode: st.mode, passScore: st.passPct, maxAttempts: st.maxAttempts });
+  route.post('/courses/:id/assessments', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const b = validate(assessmentBody, req.body); if (!b.title) fail(400, 'validation_error', { issues: [{ path: 'title', message: 'required' }] }); const st = assessmentSettings(b, []);
+    if (b.moduleId != null && !(await moduleBelongsTo(c.id, b.moduleId))) fail(404, 'module_not_found');
+    const { assessmentId: id } = await createAssessmentPage(c.id, { moduleId: b.moduleId, title: b.title, mode: st.mode, passScore: st.passPct, maxAttempts: st.maxAttempts });
     audit(req.user.id, 'course.assessment.create', String(c.id), { assessment: id });
-    res.status(201).json({ ...assessmentDto(db().prepare('SELECT * FROM assessments WHERE id=?').get(id)), locked: false, questions: [] });
+    res.status(201).json({ ...assessmentDto(await k()('assessments').where({ id }).first()), locked: false, questions: [] });
   });
-  route.put('/courses/:id/assessments/:aid', 'course.author', (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id); const b = validate(assessmentBody, req.body);
-    const st = assessmentSettings(b, questionsOf(a.id));
+  route.put('/courses/:id/assessments/:aid', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id); const b = validate(assessmentBody, req.body);
+    const st = assessmentSettings(b, await questionsOf(a.id));
     const title = b.title ?? a.title;
-    db().prepare('UPDATE assessments SET title=?, mode=?, pass_score=?, max_attempts=? WHERE id=?').run(title, st.mode, st.passPct, st.maxAttempts, a.id);
-    if (a.page_id) db().prepare('UPDATE course_pages SET title=? WHERE id=?').run(title, a.page_id); // the page and its assessment share a title
+    await k()('assessments').where({ id: a.id }).update({ title, mode: st.mode, pass_score: st.passPct, max_attempts: st.maxAttempts });
+    if (a.page_id) await k()('course_pages').where({ id: a.page_id }).update({ title }); // the page and its assessment share a title
     audit(req.user.id, 'course.assessment.update', String(c.id), { assessment: a.id });
-    res.json(assessmentDto(db().prepare('SELECT * FROM assessments WHERE id=?').get(a.id)));
+    res.json(assessmentDto(await k()('assessments').where({ id: a.id }).first()));
   });
-  route.delete('/courses/:id/assessments/:aid', 'course.author', (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id);
-    deleteAssessmentAndPage(a);
+  route.delete('/courses/:id/assessments/:aid', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id);
+    await deleteAssessmentAndPage(a);
     audit(req.user.id, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title });
     res.json({ ok: true });
   });
   route.post('/courses/:id/assessments/:aid/questions', 'course.author', async (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id); lockIfAttempted(a.id);
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id); await lockIfAttempted(a.id);
     const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') await checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
-    const pos = (db().prepare('SELECT MAX(position) m FROM questions WHERE assessment_id=?').get(a.id).m ?? -1) + 1;
-    const id = Number(db().prepare('INSERT INTO questions (assessment_id, position, type, prompt, options_json, answer_key_json, points, code_spec_json) VALUES (?,?,?,?,?,?,?,?)').run(a.id, pos, b.type, b.prompt, s.options, s.key, s.points, s.spec).lastInsertRowid);
-    res.status(201).json(authorQuestion(db().prepare('SELECT * FROM questions WHERE id=?').get(id)));
+    const id = await trx(k(), async (t) => insertId(t('questions'), {
+      assessment_id: a.id, position: ((await t('questions').where({ assessment_id: a.id }).max({ m: 'position' }).first()).m ?? -1) + 1,
+      type: b.type, prompt: b.prompt, options_json: s.options, answer_key_json: s.key, points: s.points, code_spec_json: s.spec,
+    }));
+    res.status(201).json(authorQuestion(await k()('questions').where({ id }).first()));
   });
-  const getQuestion = (req, aid) => db().prepare('SELECT * FROM questions WHERE id=? AND assessment_id=?').get(req.params.qid, aid) || fail(404, 'question_not_found');
+  const getQuestion = async (req, aid) => {
+    const id = intParam(req.params.qid);
+    return (id !== null && await k()('questions').where({ id, assessment_id: aid }).first()) || fail(404, 'question_not_found');
+  };
   route.put('/courses/:id/assessments/:aid/questions/:qid', 'course.author', async (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id); lockIfAttempted(a.id); const q = getQuestion(req, a.id);
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id); await lockIfAttempted(a.id); const q = await getQuestion(req, a.id);
     const b = validate(questionBody, req.body); checkFits(a, b); if (b.type === 'exercise') await checkModelId(req, b.spec.policy.modelId); const s = storeQuestion(b);
-    db().prepare('UPDATE questions SET type=?, prompt=?, options_json=?, answer_key_json=?, points=?, code_spec_json=? WHERE id=?').run(b.type, b.prompt, s.options, s.key, s.points, s.spec, q.id);
-    res.json(authorQuestion(db().prepare('SELECT * FROM questions WHERE id=?').get(q.id)));
+    await k()('questions').where({ id: q.id }).update({ type: b.type, prompt: b.prompt, options_json: s.options, answer_key_json: s.key, points: s.points, code_spec_json: s.spec });
+    res.json(authorQuestion(await k()('questions').where({ id: q.id }).first()));
   });
-  route.delete('/courses/:id/assessments/:aid/questions/:qid', 'course.author', (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id); lockIfAttempted(a.id); const q = getQuestion(req, a.id);
-    db().prepare('DELETE FROM questions WHERE id=?').run(q.id);
+  route.delete('/courses/:id/assessments/:aid/questions/:qid', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id); await lockIfAttempted(a.id); const q = await getQuestion(req, a.id);
+    await k()('questions').where({ id: q.id }).del();
     res.json({ ok: true });
   });
-  route.put('/courses/:id/assessments/:aid/questions-order', 'course.author', (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id);
+  route.put('/courses/:id/assessments/:aid/questions-order', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id);
     const { ids } = validate(z.object({ ids: z.array(z.number().int()) }), req.body);
-    const have = questionsOf(a.id).map((q) => q.id).sort((x, y) => x - y);
+    const have = (await questionsOf(a.id)).map((q) => q.id).sort((x, y) => x - y);
     if (JSON.stringify([...ids].sort((x, y) => x - y)) !== JSON.stringify(have)) fail(400, 'order_mismatch');
-    const upd = db().prepare('UPDATE questions SET position=? WHERE id=?');
-    db().transaction(() => ids.forEach((id, i) => upd.run(i, id)))();
+    await trx(k(), async (t) => { for (const [i, id] of ids.entries()) await t('questions').where({ id }).update({ position: i }); });
     res.json({ ok: true });
   });
 
   // ---------- Taking: summaries, attempts
-  const attemptInfo = (userId, a) => {
-    const rows = db().prepare("SELECT status, score FROM attempts WHERE assessment_id=? AND user_id=? ORDER BY id").all(a.id, userId);
+  const attemptInfo = async (userId, a) => {
+    const rows = await k()('attempts').where({ assessment_id: a.id, user_id: userId }).orderBy('id').select('status', 'score');
     const done = rows.filter((x) => x.status !== 'in_progress');
     const graded = done.filter((x) => x.status === 'graded');
     const best = graded.length ? Math.max(...graded.map((x) => x.score)) : null;
     // passed = the requirement is met: a graded attempt, and the pass score if there is one. An unscored assessment never reveals scores.
     return { attemptsUsed: done.length, inProgress: rows.some((x) => x.status === 'in_progress'), awaitingGrade: done.some((x) => x.status === 'submitted'), bestScore: a.mode === 'unscored' ? null : best, passed: best != null && meetsPass(a, best) };
   };
-  route.get('/courses/:id/assessments', 'authenticated', (req, res) => {
-    const c = getCourse(req);
-    if (!canLearn(req.user.id, c) && !canAuthor(req.user.id, c)) fail(404, 'course_not_found');
-    res.json(db().prepare('SELECT * FROM assessments WHERE course_id=? ORDER BY id').all(c.id).map((a) => {
-      const qs = questionsOf(a.id);
-      return { ...assessmentDto(a), questionCount: qs.length, totalPoints: qs.reduce((n, q) => n + q.points, 0), ...attemptInfo(req.user.id, a) };
-    }));
+  route.get('/courses/:id/assessments', 'authenticated', async (req, res) => {
+    const c = await getCourse(req);
+    if (!(await canLearn(req.user.id, c)) && !(await canAuthor(req.user.id, c))) fail(404, 'course_not_found');
+    const rows = await k()('assessments').where({ course_id: c.id }).orderBy('id');
+    res.json(await Promise.all(rows.map(async (a) => {
+      const qs = await questionsOf(a.id);
+      return { ...assessmentDto(a), questionCount: qs.length, totalPoints: qs.reduce((n, q) => n + q.points, 0), ...(await attemptInfo(req.user.id, a)) };
+    })));
   });
 
-  const attemptView = (att, a, { owner }) => {
-    const answers = new Map(db().prepare('SELECT * FROM answers WHERE attempt_id=?').all(att.id).map((x) => [x.question_id, x]));
+  const attemptView = async (att, a, { owner }) => {
+    const answers = new Map((await k()('answers').where({ attempt_id: att.id })).map((x) => [x.question_id, x]));
     const open = att.status === 'in_progress';
     const perms = userPermissions(att.user_id); // can the learner use the agent on their workspace? (their own permissions apply)
     const agentAccess = ['agent.plan', 'project.read', 'files.read', 'provider.use'].every((p) => perms.has(p));
     return {
       id: att.id, assessmentId: a.id, title: a.title, status: att.status, startedAt: att.started_at, submittedAt: att.submitted_at, mode: a.mode, passPct: a.pass_score,
       score: open || a.mode === 'unscored' ? null : att.score, passed: att.status === 'graded' ? meetsPass(a, att.score) : null,
-      questions: questionsOf(a.id).map((q) => {
+      questions: await Promise.all((await questionsOf(a.id)).map(async (q) => {
         const an = answers.get(q.id);
-        const ex = q.type === 'exercise' ? { workspace: { projectId: workspaceOf(att.id, q.id)?.project_id ?? null }, canUseAgent: agentAccess } : {};
+        const ex = q.type === 'exercise' ? { workspace: { projectId: (await workspaceOf(att.id, q.id))?.project_id ?? null }, canUseAgent: agentAccess } : {};
         return { ...learnerQuestion(q), ...(ex.workspace ? { exercise: { ...learnerQuestion(q).exercise, ...ex } } : {}), response: an ? JSON.parse(an.response_json) : null, ...(open ? {} : { earned: an?.score ?? null, feedback: an?.feedback || '' }), ...(owner || q.type === 'exercise' ? {} : { rubric: JSON.parse(q.answer_key_json)?.rubric }) };
-      }),
+      })),
     };
   };
-  const learnerAssessment = (req) => {
-    const c = getCourse(req);
-    if (!canLearn(req.user.id, c)) fail(404, 'course_not_found');
-    return { c, a: getAssessment(req, c.id) };
+  const learnerAssessment = async (req) => {
+    const c = await getCourse(req);
+    if (!(await canLearn(req.user.id, c))) fail(404, 'course_not_found');
+    return { c, a: await getAssessment(req, c.id) };
   };
-  route.post('/courses/:id/assessments/:aid/attempts', 'course.learn', (req, res) => {
-    const { a } = learnerAssessment(req);
-    if (!questionsOf(a.id).length) fail(409, 'assessment_empty');
-    let att = db().prepare("SELECT * FROM attempts WHERE assessment_id=? AND user_id=? AND status='in_progress'").get(a.id, req.user.id);
+  route.post('/courses/:id/assessments/:aid/attempts', 'course.learn', async (req, res) => {
+    const { a } = await learnerAssessment(req);
+    const questions = await questionsOf(a.id);
+    if (!questions.length) fail(409, 'assessment_empty');
+    let att = await k()('attempts').where({ assessment_id: a.id, user_id: req.user.id, status: 'in_progress' }).first();
     if (!att) {
-      if (a.max_attempts && attemptInfo(req.user.id, a).attemptsUsed >= a.max_attempts) fail(403, 'attempts_exhausted');
-      att = db().prepare('SELECT * FROM attempts WHERE id=?').get(Number(db().prepare('INSERT INTO attempts (assessment_id, user_id) VALUES (?,?)').run(a.id, req.user.id).lastInsertRowid));
-      try { for (const q of questionsOf(a.id).filter((x) => x.type === 'exercise')) createWorkspace(req.user.id, a.course_id, att.id, q); }
-      catch (e) { db().prepare('DELETE FROM attempts WHERE id=?').run(att.id); throw e; } // no half-built attempt
+      if (a.max_attempts && (await attemptInfo(req.user.id, a)).attemptsUsed >= a.max_attempts) fail(403, 'attempts_exhausted');
+      att = await k()('attempts').where({ id: await insertId(k()('attempts'), { assessment_id: a.id, user_id: req.user.id }) }).first();
+      try { for (const q of questions.filter((x) => x.type === 'exercise')) await createWorkspace(req.user.id, a.course_id, att.id, q); }
+      catch (e) { await k()('attempts').where({ id: att.id }).del(); throw e; } // no half-built attempt
     }
-    res.status(201).json(attemptView(att, a, { owner: true }));
+    res.status(201).json(await attemptView(att, a, { owner: true }));
   });
-  const ownAttempt = (req) => {
-    const c = getCourse(req);
-    const att = db().prepare('SELECT att.* FROM attempts att JOIN assessments a ON a.id=att.assessment_id WHERE att.id=? AND a.course_id=?').get(req.params.attemptId, c.id);
+  const ownAttempt = async (req) => {
+    const c = await getCourse(req);
+    const attemptId = intParam(req.params.attemptId);
+    const att = attemptId === null ? null : await k()('attempts as att').join('assessments as a', 'a.id', 'att.assessment_id').where({ 'att.id': attemptId, 'a.course_id': c.id }).first('att.*');
     if (!att) fail(404, 'attempt_not_found');
-    const a = db().prepare('SELECT * FROM assessments WHERE id=?').get(att.assessment_id);
-    if (att.user_id === req.user.id) { if (!canLearn(req.user.id, c)) fail(404, 'attempt_not_found'); return { c, att, a, owner: true }; }
-    if (!canAuthor(req.user.id, c)) fail(404, 'attempt_not_found'); // never reveal another learner's attempt
+    const a = await k()('assessments').where({ id: att.assessment_id }).first();
+    if (att.user_id === req.user.id) { if (!(await canLearn(req.user.id, c))) fail(404, 'attempt_not_found'); return { c, att, a, owner: true }; }
+    if (!(await canAuthor(req.user.id, c))) fail(404, 'attempt_not_found'); // never reveal another learner's attempt
     return { c, att, a, owner: false };
   };
-  route.get('/courses/:id/attempts/:attemptId', 'authenticated', (req, res) => { const { att, a, owner } = ownAttempt(req); res.json(attemptView(att, a, { owner })); });
+  route.get('/courses/:id/attempts/:attemptId', 'authenticated', async (req, res) => { const { att, a, owner } = await ownAttempt(req); res.json(await attemptView(att, a, { owner })); });
 
   // Submitting grades the auto-graded questions right away; text questions leave the attempt "submitted" until an instructor grades them.
-  route.post('/courses/:id/attempts/:attemptId/submit', 'course.learn', (req, res) => {
-    const { c, att, a, owner } = ownAttempt(req);
+  route.post('/courses/:id/attempts/:attemptId/submit', 'course.learn', async (req, res) => {
+    const { c, att, a, owner } = await ownAttempt(req);
     if (!owner) fail(403, 'forbidden');
     const b = validate(z.object({ answers: z.record(z.string(), z.any()) }), req.body);
-    const qs = questionsOf(a.id);
+    const qs = await questionsOf(a.id);
     let rows;
     try { rows = qs.map((q) => { const resp = cleanResponse(q, b.answers[q.id] ?? null); return { q, resp, score: gradeAuto(q, resp) }; }); }
     catch { return fail(400, 'invalid_response'); }
-    const ins = db().prepare('INSERT INTO answers (attempt_id, question_id, response_json, score) VALUES (?,?,?,?)');
-    db().transaction(() => {
-      const claimed = db().prepare("UPDATE attempts SET status='submitted', submitted_at=? WHERE id=? AND status='in_progress'").run(now(), att.id);
-      if (!claimed.changes) fail(409, 'already_submitted'); // a second submit (double click, two tabs) must not grade twice
-      for (const x of rows) {
-        if (x.q.type === 'exercise') Object.assign(x, evaluateExercise(att, x.q)); // from the workspace and transcript, never from the request
-        ins.run(att.id, x.q.id, JSON.stringify(x.resp), x.score);
-      }
-      finalize(att.id, c.id, a);
-    })();
-    res.json(attemptView(db().prepare('SELECT * FROM attempts WHERE id=?').get(att.id), a, { owner: true }));
+    // One atomic update claims the attempt, so a second submit (double click, two tabs) cannot grade twice.
+    if (!(await k()('attempts').where({ id: att.id, status: 'in_progress' }).update({ status: 'submitted', submitted_at: now() }))) fail(409, 'already_submitted');
+    try {
+      for (const x of rows) if (x.q.type === 'exercise') Object.assign(x, await evaluateExercise(att, x.q)); // from the workspace and transcript, never from the request
+      await trx(k(), async (t) => {
+        await t('answers').insert(rows.map((x) => ({ attempt_id: att.id, question_id: x.q.id, response_json: JSON.stringify(x.resp), score: x.score })));
+        await finalize(att.id, c.id, a, t);
+      });
+    } catch (e) { // nothing was graded: the learner can submit again
+      await k()('answers').where({ attempt_id: att.id }).del(); await k()('attempts').where({ id: att.id }).update({ status: 'in_progress', submitted_at: null });
+      throw e;
+    }
+    res.json(await attemptView(await k()('attempts').where({ id: att.id }).first(), a, { owner: true }));
   });
 
   // Runs the declarative checks against the learner's workspace, keeps a snapshot for the instructor, and scores the automatic part.
   // With rubric items the answer waits for the instructor (score null); with none it is complete.
-  function evaluateExercise(att, q) {
+  async function evaluateExercise(att, q) {
     const spec = JSON.parse(q.code_spec_json);
-    const ws = workspaceOf(att.id, q.id);
-    const project = ws?.project_id ? db().prepare('SELECT * FROM projects WHERE id=?').get(ws.project_id) : null;
+    const ws = await workspaceOf(att.id, q.id);
+    const project = ws?.project_id ? await k()('projects').where({ id: ws.project_id }).first() : null;
     const dir = project && fs.existsSync(project.dir) ? project.dir : null;
-    const transcript = transcriptOf(project?.id);
+    const transcript = await transcriptOf(project?.id);
     const checks = runChecks(spec, { dir, transcript });
     const autoScore = checks.reduce((n, x) => n + x.earned, 0);
     const rel = snapshot(att.id, q.id, dir, transcript);
-    db().prepare('UPDATE exercise_workspaces SET snapshot=? WHERE attempt_id=? AND question_id=?').run(rel, att.id, q.id); // the frozen policy stays as it was
+    await k()('exercise_workspaces').where({ attempt_id: att.id, question_id: q.id }).update({ snapshot: rel }); // the frozen policy stays as it was
     return { resp: { checks, autoScore, rubricScores: spec.rubric.length ? null : [] }, score: spec.rubric.length ? null : autoScore };
   }
 
   // Recomputes the score; graded once nothing is waiting on an instructor. A passing graded attempt completes the assessment's page.
-  function finalize(attemptId, courseId, a) {
-    const rows = db().prepare('SELECT an.score, an.response_json, q.points FROM answers an JOIN questions q ON q.id=an.question_id WHERE an.attempt_id=?').all(attemptId);
+  async function finalize(attemptId, courseId, a, t = k()) {
+    const rows = await t('answers as an').join('questions as q', 'q.id', 'an.question_id').where('an.attempt_id', attemptId).select('an.score', 'an.response_json', 'q.points');
     const pending = rows.some((x) => x.score == null);
     // While an exercise waits for its rubric, the points its automatic checks already earned count towards the interim score.
     const earned = (x) => x.score ?? JSON.parse(x.response_json)?.autoScore ?? 0;
     const score = percent(rows.reduce((n, x) => n + earned(x), 0), rows.reduce((n, x) => n + x.points, 0));
-    db().prepare('UPDATE attempts SET status=?, score=? WHERE id=?').run(pending ? 'submitted' : 'graded', score, attemptId);
+    await t('attempts').where({ id: attemptId }).update({ status: pending ? 'submitted' : 'graded', score });
     if (!pending && meetsPass(a, score) && a.page_id) {
-      const user = db().prepare('SELECT user_id FROM attempts WHERE id=?').get(attemptId).user_id;
-      db().prepare('INSERT OR IGNORE INTO course_progress (course_id, user_id, page_id) VALUES (?,?,?)').run(courseId, user, a.page_id);
+      const { user_id: user } = await t('attempts').where({ id: attemptId }).first('user_id');
+      await t('course_progress').insert({ course_id: courseId, user_id: user, page_id: a.page_id }).onConflict(['user_id', 'page_id']).ignore();
     }
   }
 
   // ---------- Grading
-  route.get('/courses/:id/assessments/:aid/attempts', 'course.author', (req, res) => {
-    const c = authorCourse(req); const a = getAssessment(req, c.id);
-    res.json(db().prepare(`SELECT att.id, att.status, CASE WHEN ? THEN NULL ELSE att.score END score, att.submitted_at submittedAt, u.id userId, COALESCE(NULLIF(u.display_name,''), u.username, u.email) learner
-      FROM attempts att JOIN users u ON u.id=att.user_id WHERE att.assessment_id=? AND att.status!='in_progress' ORDER BY att.id DESC`).all(a.mode === 'unscored' ? 1 : 0, a.id));
+  route.get('/courses/:id/assessments/:aid/attempts', 'course.author', async (req, res) => {
+    const c = await authorCourse(req); const a = await getAssessment(req, c.id);
+    const rows = await k()('attempts as att').join('users as u', 'u.id', 'att.user_id').where('att.assessment_id', a.id).whereNot('att.status', 'in_progress').orderBy('att.id', 'desc')
+      .select('att.id', 'att.status', 'att.score', 'att.submitted_at as submittedAt', 'u.id as userId', k().raw("COALESCE(NULLIF(u.display_name, ''), u.username, u.email) as learner"));
+    res.json(rows.map((x) => ({ ...x, score: a.mode === 'unscored' ? null : x.score })));
   });
-  route.put('/courses/:id/attempts/:attemptId/answers/:qid/grade', 'course.author', (req, res) => {
-    const c = authorCourse(req);
-    const att = db().prepare('SELECT att.* FROM attempts att JOIN assessments a ON a.id=att.assessment_id WHERE att.id=? AND a.course_id=?').get(req.params.attemptId, c.id) || fail(404, 'attempt_not_found');
+  route.put('/courses/:id/attempts/:attemptId/answers/:qid/grade', 'course.author', async (req, res) => {
+    const c = await authorCourse(req);
+    const attemptId = intParam(req.params.attemptId), qid = intParam(req.params.qid);
+    const att = (attemptId !== null && await k()('attempts as att').join('assessments as a', 'a.id', 'att.assessment_id').where({ 'att.id': attemptId, 'a.course_id': c.id }).first('att.*')) || fail(404, 'attempt_not_found');
     if (att.status === 'in_progress') fail(409, 'not_submitted');
-    const q = db().prepare('SELECT * FROM questions WHERE id=? AND assessment_id=?').get(req.params.qid, att.assessment_id) || fail(404, 'question_not_found');
-    const a = db().prepare('SELECT * FROM assessments WHERE id=?').get(att.assessment_id);
+    const q = (qid !== null && await k()('questions').where({ id: qid, assessment_id: att.assessment_id }).first()) || fail(404, 'question_not_found');
+    const a = await k()('assessments').where({ id: att.assessment_id }).first();
     let score; let response = null; let feedback;
     if (q.type === 'text') {
       ({ score, feedback } = validate(z.object({ score: z.number().min(0).max(q.points), feedback: z.string().max(4000).default('') }), req.body));
@@ -260,32 +276,33 @@ export function assessmentsRouter() {
       if (!spec.rubric.length) fail(400, 'not_manually_graded');
       const b = validate(z.object({ rubric: z.array(z.number().min(0)).length(spec.rubric.length), feedback: z.string().max(4000).default('') }), req.body);
       if (b.rubric.some((v, i) => v > spec.rubric[i].points)) fail(400, 'validation_error', { issues: [{ path: 'rubric', message: 'above the item maximum' }] });
-      const prev = JSON.parse(db().prepare('SELECT response_json FROM answers WHERE attempt_id=? AND question_id=?').get(att.id, q.id).response_json);
+      const prev = JSON.parse((await k()('answers').where({ attempt_id: att.id, question_id: q.id }).first('response_json')).response_json);
       response = { ...prev, rubricScores: b.rubric }; feedback = b.feedback; score = (prev.autoScore ?? 0) + b.rubric.reduce((n, v) => n + v, 0);
     } else fail(400, 'not_manually_graded');
-    db().transaction(() => {
-      db().prepare(`UPDATE answers SET score=?, feedback=?, graded_by=?${response ? ', response_json=?' : ''} WHERE attempt_id=? AND question_id=?`).run(...[score, feedback, req.user.id, ...(response ? [JSON.stringify(response)] : []), att.id, q.id]);
-      finalize(att.id, c.id, a);
-    })();
+    await trx(k(), async (t) => {
+      await t('answers').where({ attempt_id: att.id, question_id: q.id }).update({ score, feedback, graded_by: req.user.id, ...(response && { response_json: JSON.stringify(response) }) });
+      await finalize(att.id, c.id, a, t);
+    });
     audit(req.user.id, 'course.grade', String(c.id), { attempt: att.id, question: q.id, score });
-    res.json(attemptView(db().prepare('SELECT * FROM attempts WHERE id=?').get(att.id), a, { owner: false }));
+    res.json(await attemptView(await k()('attempts').where({ id: att.id }).first(), a, { owner: false }));
   });
 
   // ---------- Evidence for exercises: the submitted workspace and the agent transcript (instructors only, read-only)
-  const evidence = (req) => {
-    const c = authorCourse(req);
-    const att = db().prepare('SELECT att.* FROM attempts att JOIN assessments a ON a.id=att.assessment_id WHERE att.id=? AND a.course_id=?').get(req.params.attemptId, c.id) || fail(404, 'attempt_not_found');
+  const evidence = async (req) => {
+    const c = await authorCourse(req);
+    const attemptId = intParam(req.params.attemptId);
+    const att = (attemptId !== null && await k()('attempts as att').join('assessments as a', 'a.id', 'att.assessment_id').where({ 'att.id': attemptId, 'a.course_id': c.id }).first('att.*')) || fail(404, 'attempt_not_found');
     if (att.status === 'in_progress') fail(409, 'not_submitted');
-    const ws = workspaceOf(att.id, req.params.qid);
+    const ws = await workspaceOf(att.id, intParam(req.params.qid));
     if (!ws?.snapshot) fail(404, 'no_snapshot');
     return ws.snapshot;
   };
-  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/files', 'course.author', (req, res) => res.json({ files: snapshotFiles(evidence(req)) }));
-  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/file', 'course.author', (req, res) => {
-    const rel = evidence(req);
+  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/files', 'course.author', async (req, res) => res.json({ files: snapshotFiles(await evidence(req)) }));
+  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/file', 'course.author', async (req, res) => {
+    const rel = await evidence(req);
     try { res.json({ path: req.query.path, content: snapshotFile(rel, String(req.query.path || '')) }); } catch { fail(404, 'file_not_found'); }
   });
-  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/transcript', 'course.author', (req, res) => res.json({ messages: snapshotTranscript(evidence(req)) }));
+  route.get('/courses/:id/attempts/:attemptId/exercises/:qid/transcript', 'course.author', async (req, res) => res.json({ messages: snapshotTranscript(await evidence(req)) }));
 
   return r;
 }

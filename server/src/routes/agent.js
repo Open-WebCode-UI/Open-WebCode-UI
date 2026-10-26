@@ -68,18 +68,18 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
   const r = express.Router();
   const route = defineRoutes(r, '/api');
 
-  route.get('/conversations', 'authenticated', (req, res) => {
+  route.get('/conversations', 'authenticated', async (req, res) => {
     const kind = z.enum(['agent', 'chat']).parse(req.query.kind || 'agent');
     const chatType = req.query.chatType ? z.enum(CHAT_TYPES).parse(req.query.chatType) : null;
     const pid = req.query.projectId ? Number(req.query.projectId) : null;
     const rows = getDb().prepare("SELECT id,title,created_at createdAt,updated_at updatedAt,model_id modelId, web_search webSearch, course_id courseId FROM conversations WHERE user_id=? AND kind=? AND project_id IS ? AND (? IS NULL OR COALESCE(chat_type,'coding')=?) ORDER BY id DESC LIMIT 50").all(req.user.id, kind, pid, chatType, chatType);
     const costs = sessionCosts(rows.map((c) => c.id), req.permissions); // null unless the administrator turned cost display on for everyone or this user has spend.view; the token estimate follows the same switch
-    res.json(costs ? rows.map((c) => ({ ...c, tokens: estimateTokens(loadMessages(c.id)), cost: costs.get(c.id) ?? 0 })) : rows);
+    res.json(costs ? await Promise.all(rows.map(async (c) => ({ ...c, tokens: estimateTokens(await loadMessages(c.id)), cost: costs.get(c.id) ?? 0 }))) : rows);
   });
-  route.get('/conversations/:id/messages', 'authenticated', (req, res) => {
+  route.get('/conversations/:id/messages', 'authenticated', async (req, res) => {
     const c = getDb().prepare('SELECT * FROM conversations WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
     if (!c) fail(404, 'conversation_not_found');
-    res.json(loadMessages(c.id).filter((m) => m.role !== 'tool').map((m) => ({ role: m.role, content: m.display ?? m.content, thinking: m.thinking, toolCalls: m.toolCalls, attachments: m.attachments?.map((a) => ({ id: a.id, name: a.name, kind: a.kind })) })));
+    res.json((await loadMessages(c.id)).filter((m) => m.role !== 'tool').map((m) => ({ role: m.role, content: m.display ?? m.content, thinking: m.thinking, toolCalls: m.toolCalls, attachments: m.attachments?.map((a) => ({ id: a.id, name: a.name, kind: a.kind })) })));
   });
   route.put('/conversations/:id', 'authenticated', (req, res) => {
     const { title } = validate(z.object({ title: z.string().trim().min(1).max(120) }), req.body);
@@ -136,7 +136,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
     for await (const ev of adapter.stream({ system: sys, messages: [{ role: 'user', content: ask }], tools: [], model: rm.model.model_id, maxTokens: Math.max(2000, rm.model.max_tokens), thinking: { mode: 'off' }, signal })) { if (ev.type === 'text') text += ev.text; else if (ev.type === 'usage') onUsage(ev); }
     text = text.trim();
     if (!text) throw new Error('The model returned an empty summary.');
-    const archived = archiveAndRestart(conv.id, text);
+    const archived = await archiveAndRestart(conv.id, text);
     audit(userId, 'session.compact', String(conv.id), { archived });
     emit({ type: 'compacted', summary: text, archived });
   }
@@ -156,7 +156,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       const project = await getProject({ params: { id: b.projectId }, user: req.user });
       const general = getSettings('general');
       // A course exercise workspace carries the instructor's rules for this attempt. They only narrow what the learner's role allows.
-      const scope = scopeOf(project.id);
+      const scope = await scopeOf(project.id);
       if (scope) {
         const deny = (status, code, why) => { audit(req.user.id, 'exercise.policy_denied', String(project.id), { why }); fail(status, code, { reason: why }); };
         perms = effectivePermissions(perms, scope);
@@ -168,7 +168,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
           if (!(c0 && (c0.plan || (b.resume && c0.mode === 'act')))) deny(403, 'plan_required', 'plan_required');
         }
         if (!STATUS_RE.test(b.message.trim()) && !COMMAND_RE.test(b.message.trim())) {
-          const used = usageOf(project.id);
+          const used = await usageOf(project.id);
           if (scope.policy.maxMessages && used.messages >= scope.policy.maxMessages) deny(429, 'exercise_message_limit', 'messages');
           if (scope.policy.maxCost && used.cost >= scope.policy.maxCost) deny(429, 'exercise_budget_exceeded', 'cost');
         }
@@ -189,7 +189,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       // Resuming right after Stop: the stopped turn may still be saving its messages, so give it a moment to finish.
       if (b.resume) for (let n = 0; n < 30 && activeConversations.has(conv.id); n++) await new Promise((r) => setTimeout(r, 100));
       if (activeConversations.has(conv.id)) fail(409, 'session_busy');
-      const messages = loadMessages(conv.id);
+      const messages = await loadMessages(conv.id);
       const start = messages.length;
       const limit = (!rm.model.auto_context && rm.model.context_size) || DEFAULT_CONTEXT_WINDOW; // automatic sizing: the real window is unknown, so estimate against the default
       const command = COMMAND_RE.exec(b.message.trim());
@@ -214,7 +214,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       activeConversations.add(conv.id); setTurnActive(project.id, true);
       let plan = b.mode === 'act' ? null : conv.plan ?? null; // an Act turn consumes the pending plan
       let contextSent = false, mcp = null;
-      const cpEvents = [], ctx0 = { markCheckpoint: (cp) => { recordCheckpointMarks(project.id, cp.id); cpEvents.push({ ...cp, offset: messages.length - start }); } };
+      const cpEvents = [], ctx0 = { markCheckpoint: async (cp) => { await recordCheckpointMarks(project.id, cp.id); cpEvents.push({ ...cp, offset: messages.length - start }); } };
       // The context-size report goes out just before `done`, so `done` stays the last event of a turn.
       const sendContext = () => { if (contextSent) return; contextSent = true; emit({ type: 'context', ...contextInfo(estimateTokens(messages, system.length), limit) }); };
       const turnEmit = (ev) => { if (ev.type === 'done') sendContext(); emit(ev); };
@@ -233,15 +233,15 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         if (command) {
           const name = command[1].toLowerCase();
           if (!messages.length) emit({ type: 'notice', text: name === 'compact' ? 'There is nothing to compact yet.' : 'The session is already empty.' });
-          else if (name === 'clear') { const archived = archiveAndRestart(conv.id, null); audit(req.user.id, 'session.clear', String(conv.id), { archived }); emit({ type: 'cleared', archived }); }
+          else if (name === 'clear') { const archived = await archiveAndRestart(conv.id, null); audit(req.user.id, 'session.clear', String(conv.id), { archived }); emit({ type: 'cleared', archived }); }
           else await compactSession({ adapter, rm, conv, messages, skill: compactSkill, focus: (command[2] || '').trim(), signal: abort.signal, emit, userId: req.user.id });
-          emit({ type: 'context', ...contextInfo(estimateTokens(loadMessages(conv.id), system.length), limit) }); // what the model will see next time
+          emit({ type: 'context', ...contextInfo(estimateTokens(await loadMessages(conv.id), system.length), limit) }); // what the model will see next time
           emit({ type: 'done' });
           return;
         }
         if (ws.notice) emit({ type: 'notice', text: ws.notice });
         if (inv) emit({ type: 'skill', name: inv.skill.name });
-        if (b.mode === 'act' && !b.resume) { const cp = await createCheckpoint(project.id, project.dir, { label: 'Start of turn', author: 'system' }); recordCheckpointMarks(project.id, cp.id); cpEvents.push({ ...cp, offset: messages.length - start }); emit({ type: 'checkpoint', ...cp }); }
+        if (b.mode === 'act' && !b.resume) { const cp = await createCheckpoint(project.id, project.dir, { label: 'Start of turn', author: 'system' }); await recordCheckpointMarks(project.id, cp.id); cpEvents.push({ ...cp, offset: messages.length - start }); emit({ type: 'checkpoint', ...cp }); }
         coordination.register(project.id, conv.id, conv.title);
         const ctx = {
           root: project.dir, projectId: project.id, userId: req.user.id, execMode: general.execMode, agentMode: b.mode, permissions: perms, dataDir: config.dataDir,
@@ -278,8 +278,8 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       } finally {
         await mcp?.close().catch(() => {});
         setTurnActive(project.id, false); activeConversations.delete(conv.id); coordination.release(project.id, conv.id);
-        if (!command) { persistFrom(conv.id, messages, start, cpEvents); if (!contextSent) sendContext(); } // (after an error or Stop there was no `done`)
-        touch(conv.id, { mode: b.mode, plan, modelId: rm.model.id });
+        if (!command) { await persistFrom(conv.id, messages, start, cpEvents); if (!contextSent) sendContext(); } // (after an error or Stop there was no `done`)
+        await touch(conv.id, { mode: b.mode, plan, modelId: rm.model.id });
         res.end();
       }
     } catch (e) { if (conv) activeConversations.delete(conv.id); if (res.headersSent) res.end(); else next(e); }
@@ -302,7 +302,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         const prior = b.conversationId ? getDb().prepare("SELECT course_id FROM conversations WHERE id=? AND user_id=? AND kind='chat' AND chat_type='course'").get(b.conversationId, req.user.id) : null;
         courseId = prior ? prior.course_id : b.courseId ?? null;
         if (!courseId) fail(400, 'course_required');
-        if (!designableCourses(req.user.id, { all: allPerms.has('course.admin') }).some((c) => c.id === courseId)) fail(404, 'course_not_found');
+        if (!(await designableCourses(req.user.id, { all: allPerms.has('course.admin') })).some((c) => c.id === courseId)) fail(404, 'course_not_found');
       }
       const rm = await resolveModel(req.user, b.modelId ?? getSettings('general').defaultModels.chat);
       if (STATUS_RE.test(b.message.trim())) {
@@ -314,7 +314,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       if (!rm) fail(400, 'no_model_available');
       const att = prepareForMessage(req.user.id, b.attachments, { caps: uploadCaps(rm), providerType: rm.provider.type });
       const conv = getConversation(req, 'chat', null, b.conversationId, b.message, type, courseId);
-      const messages = loadMessages(conv.id), start = messages.length;
+      const messages = await loadMessages(conv.id), start = messages.length;
       const inv = await expandSkillInvocation(req.user.id, b.message, 'chat');
       const um = inv ? { role: 'user', content: inv.content, display: inv.display } : { role: 'user', content: b.message };
       if (att.refs.length) { um.content += att.inline; um.display = um.display ?? b.message; um.attachments = att.refs; bindToConversation(req.user.id, att.refs.map((a) => a.id), conv.id); }
@@ -328,12 +328,12 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         emit({ type: 'start', conversationId: conv.id });
         if (ws.notice) emit({ type: 'notice', text: ws.notice });
         await runAgentTurn({
-          adapter: adapterFactory(rm.provider), model: rm.model.model_id, system: systemPromptFor(CHAT_PROMPT[type][0], req.user[CHAT_PROMPT[type][1]], { effort: b.effort, personaName: getSettings('branding').personaName, memory: await memoryPrompt(memScopes, req.user.id, null, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') + (courseTools ? courseDesignContext(courseId) : '') }), messages, prepare: hydrator(req.user.id),
+          adapter: adapterFactory(rm.provider), model: rm.model.model_id, system: systemPromptFor(CHAT_PROMPT[type][0], req.user[CHAT_PROMPT[type][1]], { effort: b.effort, personaName: getSettings('branding').personaName, memory: await memoryPrompt(memScopes, req.user.id, null, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') + (courseTools ? await courseDesignContext(courseId) : '') }), messages, prepare: hydrator(req.user.id),
           ctx: { agentMode: 'chat', execMode: 'files_only', permissions: new Set(), userId: req.user.id, attachments: { saveOutput: (m, name) => saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: getSettings('general').maxAttachmentMb * 1024 * 1024 }) }, webSearch: ws.ctx, courseDesign: courseTools, memory: memoryContext(req.user.id, null, memScopes, (m) => emit({ type: 'memory_saved', ...m })), onSearch: (query) => audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }) }, emit, signal: abort.signal, maxIterations: courseTools ? 20 : ws.ctx || memScopes.length ? 6 : 1, maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking),
           onUsage: (u) => recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'chat', ...u }),
         });
       } catch (e) { emit({ type: 'error', message: e?.userMessage ? String(e.message).slice(0, 300) : 'The model request failed.' }); console.error('chat error', e?.message); }
-      finally { persistFrom(conv.id, messages, start); touch(conv.id, { modelId: rm.model.id }); res.end(); }
+      finally { await persistFrom(conv.id, messages, start); await touch(conv.id, { modelId: rm.model.id }); res.end(); }
     } catch (e) { if (res.headersSent) res.end(); else next(e); }
   });
 

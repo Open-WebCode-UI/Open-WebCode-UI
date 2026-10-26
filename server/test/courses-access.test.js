@@ -18,45 +18,45 @@ describe('course access', () => {
     learner = login(app, { username: 'stu', roles: ['developer'] });
   });
 
-  it('instructor role holds author and learn; designating = assigning the role', () => {
+  it('instructor role holds author and learn; designating = assigning the role', async () => {
     const c = mkCourse();
-    expect(canAuthor(owner.id, c)).toBe(true);
-    expect(canAuthor(learner.id, c)).toBe(false);
+    expect(await canAuthor(owner.id, c)).toBe(true);
+    expect(await canAuthor(learner.id, c)).toBe(false);
   });
-  it('co-instructors can author; admins can author any course', () => {
+  it('co-instructors can author; admins can author any course', async () => {
     const c = mkCourse();
     const other = login(createApp(), { username: 'assistant1', roles: ['instructor'] });
-    expect(canAuthor(other.id, c)).toBe(false);
+    expect(await canAuthor(other.id, c)).toBe(false);
     getDb().prepare('INSERT INTO course_instructors VALUES (?,?)').run(c.id, other.id);
-    expect(canAuthor(other.id, c)).toBe(true);
+    expect(await canAuthor(other.id, c)).toBe(true);
     const admin = login(createApp(), { username: 'root1', roles: ['administrator'] });
-    expect(canAuthor(admin.id, c)).toBe(true);
+    expect(await canAuthor(admin.id, c)).toBe(true);
   });
-  it('requires enrollment and a published course', () => {
+  it('requires enrollment and a published course', async () => {
     const c = mkCourse();
-    expect(canLearn(learner.id, c)).toBe(false);
+    expect(await canLearn(learner.id, c)).toBe(false);
     enroll(c, 'user', learner.id);
-    expect(canLearn(learner.id, c)).toBe(true);
-    expect(canLearn(learner.id, mkCourse('draft'))).toBe(false);
-    expect(listLearnerCourses(learner.id).map((x) => x.id)).toEqual([c.id]);
+    expect(await canLearn(learner.id, c)).toBe(true);
+    expect(await canLearn(learner.id, mkCourse('draft'))).toBe(false);
+    expect((await listLearnerCourses(learner.id)).map((x) => x.id)).toEqual([c.id]);
   });
-  it('enrolls through a role', () => {
+  it('enrolls through a role', async () => {
     const c = mkCourse(); enroll(c, 'role', 'developer');
-    expect(canLearn(learner.id, c)).toBe(true);
-    expect(canLearn(owner.id, c)).toBe(false);
+    expect(await canLearn(learner.id, c)).toBe(true);
+    expect(await canLearn(owner.id, c)).toBe(false);
   });
-  it('enrolls through a SAML group persisted at login', () => {
+  it('enrolls through a SAML group persisted at login', async () => {
     const c = mkCourse(); enroll(c, 'saml_group', 'cs101');
-    expect(canLearn(learner.id, c)).toBe(false);
+    expect(await canLearn(learner.id, c)).toBe(false);
     syncRolesFromGroups(learner.id, ['cs101'], {});
-    expect(canLearn(learner.id, c)).toBe(true);
+    expect(await canLearn(learner.id, c)).toBe(true);
     syncRolesFromGroups(learner.id, ['other'], {});
-    expect(canLearn(learner.id, c)).toBe(false);
+    expect(await canLearn(learner.id, c)).toBe(false);
   });
-  it('enrolled users without course.learn cannot take the course', () => {
+  it('enrolled users without course.learn cannot take the course', async () => {
     makeRole('nolearn', ['project.read']);
     const u = login(createApp(), { username: 'nolrn', roles: ['nolearn'] });
     const c = mkCourse(); enroll(c, 'user', u.id);
-    expect(canLearn(u.id, c)).toBe(false);
+    expect(await canLearn(u.id, c)).toBe(false);
   });
 });

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx, insertId } from '../db/dialect.js';
 import { config } from '../config.js';
 import { TOOL_DEFS } from '../agent/tools.js';
 import { resolveInJail, resolveForWrite, isGitPath, JailError } from '../workspace/jail.js';
@@ -40,8 +41,8 @@ export const specPoints = (s) => s.checks.reduce((n, c) => n + c.points, 0) + s.
 const workspaceDir = (userId, name) => path.join(config.dataDir, 'workspaces', String(userId), name);
 
 // One workspace per exercise per attempt: an ordinary project owned by the learner, seeded with the starter files.
-export function createWorkspace(userId, courseId, attemptId, q) {
-  const db = getDb(); const spec = JSON.parse(q.code_spec_json);
+export async function createWorkspace(userId, courseId, attemptId, q) {
+  const spec = JSON.parse(q.code_spec_json);
   const name = `course-${courseId}-a${attemptId}-q${q.id}`;
   const dir = workspaceDir(userId, name);
   fs.mkdirSync(dir, { recursive: true });
@@ -51,21 +52,23 @@ export function createWorkspace(userId, courseId, attemptId, q) {
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, f.content);
     }
-    const projectId = Number(db.prepare('INSERT INTO projects (user_id, name, dir) VALUES (?,?,?)').run(userId, name, dir).lastInsertRowid);
-    // The rules are copied here, so editing the exercise later cannot change an attempt in progress.
-    db.prepare('INSERT INTO exercise_workspaces (attempt_id, question_id, project_id, policy_json) VALUES (?,?,?,?)').run(attemptId, q.id, projectId, JSON.stringify(normalizePolicy(spec.policy)));
-    return projectId;
+    return await trx(getKnex(), async (t) => {
+      const projectId = await insertId(t('projects'), { user_id: userId, name, dir });
+      // The rules are copied here, so editing the exercise later cannot change an attempt in progress.
+      await t('exercise_workspaces').insert({ attempt_id: attemptId, question_id: q.id, project_id: projectId, policy_json: JSON.stringify(normalizePolicy(spec.policy)) });
+      return projectId;
+    });
   } catch (e) { fs.rmSync(dir, { recursive: true, force: true }); throw e; }
 }
-export const workspaceOf = (attemptId, qid) => getDb().prepare('SELECT * FROM exercise_workspaces WHERE attempt_id=? AND question_id=?').get(attemptId, qid);
+export const workspaceOf = (attemptId, qid) => getKnex()('exercise_workspaces').where({ attempt_id: attemptId, question_id: qid }).first();
 
 // ---------- Transcript: what the learner asked and what the agent did, across the workspace's sessions
 const clip = (v, n) => (typeof v === 'string' && v.length > n ? `${v.slice(0, n)}…` : v);
-export function transcriptOf(projectId) {
+export async function transcriptOf(projectId) {
   if (projectId == null) return [];
   const out = [];
-  const convs = getDb().prepare("SELECT id FROM conversations WHERE project_id=? AND kind='agent' ORDER BY id").all(projectId);
-  for (const c of convs) for (const m of loadMessages(c.id)) {
+  const convs = await getKnex()('conversations').where({ project_id: projectId, kind: 'agent' }).orderBy('id').select('id');
+  for (const c of convs) for (const m of await loadMessages(c.id)) {
     if (m.role === 'user') out.push({ role: 'user', content: clip(String(m.display ?? m.content ?? ''), 3000) });
     else if (m.role === 'assistant') out.push({ role: 'assistant', content: clip(String(m.content ?? ''), 3000), tools: (m.toolCalls || []).map((t) => ({ name: t.name, args: clip(JSON.stringify(t.args ?? {}), 300) })) });
     if (out.length >= 2000) return out;

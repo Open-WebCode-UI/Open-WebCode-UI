@@ -29,7 +29,7 @@ export function sessionsRouter() {
     const rows = getDb().prepare("SELECT id, title, created_at, updated_at, mode, model_id FROM conversations WHERE user_id=? AND project_id=? AND kind='agent' ORDER BY updated_at DESC, id DESC LIMIT 100").all(req.user.id, p.id);
     const costs = sessionCosts(rows.map((c) => c.id), req.permissions); // null unless the administrator turned cost display on for everyone or this user has spend.view
     res.json(await Promise.all(rows.map(async (c) => {
-      const msgs = loadMessages(c.id);
+      const msgs = await loadMessages(c.id);
       return { ...(costs ? { cost: costs.get(c.id) ?? 0 } : {}), modelId: c.model_id, id: c.id, title: c.title, createdAt: c.created_at, updatedAt: c.updated_at, mode: c.mode, messages: msgs.length, running: activeConversations.has(c.id), context: contextInfo(estimateTokens(msgs, await overhead(req, c.mode)), windowSize(c)) };
     })));
   });
@@ -38,7 +38,7 @@ export function sessionsRouter() {
   route.get('/sessions/:id', 'agent.plan', async (req, res) => {
     const c = own(req), rows = getDb().prepare('SELECT id, role, content, archived, kind, rolled_back FROM messages WHERE conversation_id=? ORDER BY id').all(c.id), events = getDb().prepare('SELECT checkpoint_id, label, anchor_message_id FROM checkpoint_events WHERE conversation_id=? ORDER BY id').all(c.id);
     res.json({ id: c.id, projectId: c.project_id, title: c.title, mode: c.mode, modelId: c.model_id, webSearch: !!c.web_search, pendingPlan: c.plan || null, running: activeConversations.has(c.id),
-      context: contextInfo(estimateTokens(loadMessages(c.id), await overhead(req, c.mode)), windowSize(c)), items: buildTimeline(rows, { pendingPlan: c.plan, events }) });
+      context: contextInfo(estimateTokens(await loadMessages(c.id), await overhead(req, c.mode)), windowSize(c)), items: buildTimeline(rows, { pendingPlan: c.plan, events }) });
   });
 
   route.put('/sessions/:id', 'agent.plan', (req, res) => {

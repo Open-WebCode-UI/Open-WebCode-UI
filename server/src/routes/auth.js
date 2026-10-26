@@ -19,11 +19,11 @@ export function authRouter() {
   const r = express.Router();
   const route = defineRoutes(r, '/api/auth');
 
-  route.get('/me', 'partial', (req, res) => {
+  route.get('/me', 'partial', async (req, res) => {
     const full = req.session.stage === 'full';
     const user = userDto(req.user, { withPerms: full });
     // Lets the navbar hide Courses from learners who have nothing to take.
-    if (full && user) user.hasCourses = listLearnerCourses(req.user.id).length > 0;
+    if (full && user) user.hasCourses = (await listLearnerCourses(req.user.id)).length > 0;
     res.json({ stage: req.session.stage, csrf: req.session.csrf, user, stepup: stepupOk(req) });
   });
 

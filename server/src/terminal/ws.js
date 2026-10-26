@@ -5,7 +5,7 @@ import { userPermissions } from '../auth/rbac.js';
 import { scopeOf, effectivePermissions } from '../courses/policy.js';
 
 // The user's permissions for one project: narrowed by the rules of a course exercise workspace, if it is one.
-const permsFor = (userId, projectId) => { const base = userPermissions(userId), sc = scopeOf(projectId); return sc ? effectivePermissions(base, sc) : base; };
+const permsFor = async (userId, projectId) => { const base = userPermissions(userId), sc = await scopeOf(projectId); return sc ? effectivePermissions(base, sc) : base; };
 import { getSettings } from '../settings.js';
 import { audit } from '../audit.js';
 import { terminals as defaultManager } from './manager.js';
@@ -20,7 +20,7 @@ const originOk = (req) => {
 // our own origin (cross-site WebSocket hijacking), and only the session's owner may attach. The agent's shell is view-only.
 export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 30_000 } = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
-  server.on('upgrade', (req, socket, head) => {
+  server.on('upgrade', async (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname !== '/api/terminal/ws') return;
     const reject = (code, text) => { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
@@ -28,7 +28,8 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
     const sess = loadSession(parseCookies(req.headers.cookie)[cookieName()]);
     if (!sess || sess.stage !== 'full') return reject(401, 'Unauthorized');
     const term = manager.get(url.searchParams.get('id') || '');
-    const perms = permsFor(sess.user.id, term?.projectId);
+    const perms = await permsFor(sess.user.id, term?.projectId).catch(() => null);
+    if (!perms) return reject(500, 'Internal Server Error');
     const allowed = term && term.userId === sess.user.id && shellEnabled() && (term.kind === 'agent' ? perms.has('agent.shell.run') || perms.has('terminal.use') : perms.has('terminal.use'));
     if (!allowed) return reject(404, 'Not Found');
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { sess, term }));
@@ -47,8 +48,9 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
       else if (m.type === 'resize') term.resize(Number(m.cols), Number(m.rows));
     });
     // Re-validate regularly: revoked session, disabled user, lost permission, or shell mode switched off all end the connection.
-    const timer = setInterval(() => {
-      const s = loadSession(sess.id), perms = s && permsFor(s.user.id, term.projectId);
+    const timer = setInterval(async () => {
+      const s = loadSession(sess.id), perms = s && await permsFor(s.user.id, term.projectId).catch(() => null);
+      if (s && !perms) return; // could not check this time (database error): keep the connection, try again at the next sweep
       const ok = s && s.stage === 'full' && shellEnabled() && (term.kind === 'agent' ? perms.has('agent.shell.run') || perms.has('terminal.use') : perms.has('terminal.use'));
       if (!ok) { send({ type: 'closed', reason: 'access_revoked' }); ws.close(4401, 'access revoked'); if (term.kind === 'user') manager.close(term.id); }
       else if (ws.readyState === 1) ws.ping();

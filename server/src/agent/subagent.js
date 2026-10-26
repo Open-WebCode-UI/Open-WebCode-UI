@@ -37,7 +37,7 @@ export function createSubagentRuntime({ ctx, adapter, model, system, emit, signa
     if (childMode === 'act') await actLock.acquire(); // act children edit files, so they run one at a time
     let report = null, finalText = '', outcome = 'complete';
     try {
-      if (childMode === 'act') { const cp = await createCheckpoint(ctx.projectId, ctx.root, { label: `Before subagent: ${label}`.slice(0, 120), author: 'agent', dataDir: ctx.dataDir }); ctx.markCheckpoint?.(cp); wrap({ type: 'checkpoint', ...cp }); }
+      if (childMode === 'act') { const cp = await createCheckpoint(ctx.projectId, ctx.root, { label: `Before subagent: ${label}`.slice(0, 120), author: 'agent', dataDir: ctx.dataDir }); await ctx.markCheckpoint?.(cp); wrap({ type: 'checkpoint', ...cp }); }
       const childCtx = {
         ...ctx, agentMode: childMode, isSubagent: true, subagents: false, skills: [],
         askUser: undefined, onPlan: undefined, onModeRequest: undefined, onModeChange: undefined, onSkill: undefined,

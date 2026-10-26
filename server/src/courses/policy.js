@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
 import { globToRegex, isGitPath } from '../workspace/jail.js';
 
 // The agent rules for one exercise. They only ever subtract from what the learner's own role allows: the effective permissions
@@ -72,10 +72,10 @@ export function deniedTools(policy) {
 
 // ---------- Scope of a workspace: the frozen policy of the attempt it belongs to, or null for an ordinary project
 const now = () => Math.floor(Date.now() / 1000);
-export function scopeOf(projectId) {
+export async function scopeOf(projectId) {
   if (projectId == null) return null;
-  const row = getDb().prepare(`SELECT ew.policy_json, ew.attempt_id, ew.question_id, att.status, att.started_at
-    FROM exercise_workspaces ew JOIN attempts att ON att.id=ew.attempt_id WHERE ew.project_id=?`).get(projectId);
+  const row = await getKnex()('exercise_workspaces as ew').join('attempts as att', 'att.id', 'ew.attempt_id').where('ew.project_id', projectId)
+    .first('ew.policy_json', 'ew.attempt_id', 'ew.question_id', 'att.status', 'att.started_at');
   if (!row) return null;
   const policy = normalizePolicy(row.policy_json ? JSON.parse(row.policy_json) : null);
   const deadline = policy.timeLimitMin ? row.started_at + policy.timeLimitMin * 60 : null;
@@ -110,10 +110,12 @@ export function touchesProtected(rel, globs, absDir) {
 }
 
 // ---------- Limits on a workspace's sessions
-export function usageOf(projectId) {
-  const db = getDb();
-  const messages = db.prepare(`SELECT COUNT(*) n FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.project_id=? AND c.kind='agent' AND m.role='user' AND m.archived=0`).get(projectId).n;
-  const cost = db.prepare(`SELECT COALESCE(SUM(u.cost),0) c FROM usage u JOIN conversations c ON c.id=u.conversation_id WHERE c.project_id=? AND c.kind='agent'`).get(projectId).c;
+export async function usageOf(projectId) {
+  const k = getKnex();
+  const messages = (await k('messages as m').join('conversations as c', 'c.id', 'm.conversation_id')
+    .where({ 'c.project_id': projectId, 'c.kind': 'agent', 'm.role': 'user', 'm.archived': 0 }).count({ n: '*' }).first()).n;
+  const cost = (await k('usage as u').join('conversations as c', 'c.id', 'u.conversation_id').where({ 'c.project_id': projectId, 'c.kind': 'agent' })
+    .first({ c: k.raw('COALESCE(SUM(u.cost), 0)') })).c;
   return { messages, cost };
 }
 

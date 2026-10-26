@@ -93,15 +93,15 @@ describe('checkpoint rollback of sessions', () => {
     const conv = db.prepare("INSERT INTO conversations (user_id, project_id, kind) VALUES (?,?,'agent')").run(uid, pid).lastInsertRowid;
     const add = (role, content) => db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)').run(conv, role, JSON.stringify({ role, content }));
     add('user', 'one'); add('assistant', 'reply one');
-    recordCheckpointMarks(pid, 'cp1');
+    await recordCheckpointMarks(pid, 'cp1');
     add('user', 'two'); add('assistant', 'reply two');
-    recordCheckpointMarks(pid, 'before');
-    rollBackMessages('cp1'); copyCheckpointMarks('cp1', 'after');
-    expect(loadMessages(conv).map((m) => m.content)).toEqual(['one', 'reply one']);
+    await recordCheckpointMarks(pid, 'before');
+    await rollBackMessages('cp1'); await copyCheckpointMarks('cp1', 'after');
+    expect((await loadMessages(conv)).map((m) => m.content)).toEqual(['one', 'reply one']);
     const rows = db.prepare('SELECT role, content, archived, kind, rolled_back FROM messages ORDER BY id').all();
     expect(buildTimeline(rows).map((i) => [i.text, !!i.rolledBack])).toEqual([['one', false], ['reply one', false], ['two', true], ['reply two', true]]);
-    rollBackMessages('before');
-    expect(loadMessages(conv).map((m) => m.content)).toEqual(['one', 'reply one', 'two', 'reply two']);
+    await rollBackMessages('before');
+    expect((await loadMessages(conv)).map((m) => m.content)).toEqual(['one', 'reply one', 'two', 'reply two']);
   });
 });
 

@@ -1,4 +1,5 @@
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { trx, insertId } from '../db/dialect.js';
 import { nextPosition } from './outline.js';
 import { removeSnapshots } from './exercises.js';
 
@@ -7,24 +8,23 @@ import { removeSnapshots } from './exercises.js';
 export const ASSESSMENT_LAYOUT = 'assessment';
 
 export function createAssessmentPage(courseId, { moduleId = null, title, content = {}, mode = 'unlimited', passScore = null, maxAttempts = 0 }) {
-  const db = getDb();
-  return db.transaction(() => {
-    const pageId = Number(db.prepare('INSERT INTO course_pages (course_id, module_id, position, title, layout, content_json, config_json) VALUES (?,?,?,?,?,?,?)')
-      .run(courseId, moduleId, nextPosition(courseId, moduleId), title, ASSESSMENT_LAYOUT, JSON.stringify(content), '{}').lastInsertRowid);
-    const id = Number(db.prepare('INSERT INTO assessments (course_id, page_id, title, mode, pass_score, max_attempts) VALUES (?,?,?,?,?,?)')
-      .run(courseId, pageId, title, mode, passScore, maxAttempts).lastInsertRowid);
+  return trx(getKnex(), async (t) => {
+    const pageId = await insertId(t('course_pages'), {
+      course_id: courseId, module_id: moduleId, position: await nextPosition(courseId, moduleId, t), title, layout: ASSESSMENT_LAYOUT, content_json: JSON.stringify(content), config_json: '{}',
+    });
+    const id = await insertId(t('assessments'), { course_id: courseId, page_id: pageId, title, mode, pass_score: passScore, max_attempts: maxAttempts });
     return { pageId, assessmentId: id };
-  })();
+  });
 }
 
 // Removes the assessment, every attempt at it (and their saved workspaces), and its page.
-export function deleteAssessmentAndPage(assessment) {
-  const db = getDb();
-  removeSnapshots(db.prepare('SELECT id FROM attempts WHERE assessment_id=?').all(assessment.id).map((x) => x.id));
-  db.transaction(() => {
-    db.prepare('DELETE FROM assessments WHERE id=?').run(assessment.id);
-    if (assessment.page_id) db.prepare('DELETE FROM course_pages WHERE id=?').run(assessment.page_id);
-  })();
+export async function deleteAssessmentAndPage(assessment) {
+  const k = getKnex();
+  removeSnapshots((await k('attempts').where({ assessment_id: assessment.id }).select('id')).map((x) => x.id));
+  await trx(k, async (t) => {
+    await t('assessments').where({ id: assessment.id }).del();
+    if (assessment.page_id) await t('course_pages').where({ id: assessment.page_id }).del();
+  });
 }
 
-export const assessmentOfPage = (pageId) => getDb().prepare('SELECT * FROM assessments WHERE page_id=?').get(pageId);
+export const assessmentOfPage = (pageId) => getKnex()('assessments').where({ page_id: pageId }).first();

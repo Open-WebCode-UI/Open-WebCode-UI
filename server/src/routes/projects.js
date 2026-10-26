@@ -32,9 +32,9 @@ const guarded = (resolve) => (p, rel) => { try { return resolve(p.dir, rel); } c
 const jail = guarded(resolveInJail);
 const jailWrite = guarded(resolveForWrite);
 // Modifying operations: .git is off limits, and so is anything an exercise's rules protect (a folder holding a protected file included).
-const jailW = (p, rel) => {
+const jailW = async (p, rel) => {
   const abs = jailWrite(p, rel);
-  const globs = scopeOf(p.id)?.policy.protectedFiles;
+  const globs = (await scopeOf(p.id))?.policy.protectedFiles;
   if (globs?.length) { const r = relFrom(p.dir, abs); if (touchesProtected(r, globs, abs)) fail(403, 'protected_file', { path: r }); }
   return abs;
 };
@@ -166,21 +166,21 @@ export function projectsRouter() {
   route.put('/projects/:id/file', 'files.write', express.json({ limit: '10mb' }), async (req, res) => {
     const p = await getProject(req), b = validate(z.object({ path: z.string().min(1).max(500), content: z.string() }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
-    const abs = jailW(p, b.path);
+    const abs = await jailW(p, b.path);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, b.content);
     res.json({ ok: true });
   });
   route.post('/projects/:id/mkdir', 'files.write', async (req, res) => {
     const p = await getProject(req), { path: rel } = validate(z.object({ path: z.string().min(1).max(500) }), req.body);
-    fs.mkdirSync(jailW(p, rel), { recursive: true });
+    fs.mkdirSync(await jailW(p, rel), { recursive: true });
     res.json({ ok: true });
   });
   // Rename or move (the same operation). Never silently replaces an existing file, and refuses to move a folder into itself.
   route.post('/projects/:id/rename', 'files.write', async (req, res) => {
     const p = await getProject(req), b = validate(z.object({ from: z.string().min(1).max(500), to: z.string().min(1).max(500), overwrite: z.boolean().default(false) }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
-    const from = jailW(p, b.from), to = jailW(p, b.to), root = fs.realpathSync(p.dir);
+    const from = await jailW(p, b.from), to = await jailW(p, b.to), root = fs.realpathSync(p.dir);
     if (from === root) fail(400, 'cannot_move_root');
     let st; try { st = fs.lstatSync(from); } catch { fail(404, 'not_found'); }
     if (from === to) return res.json({ ok: true, unchanged: true });
@@ -194,7 +194,7 @@ export function projectsRouter() {
     res.json({ ok: true });
   });
   route.delete('/projects/:id/file', 'files.write', async (req, res) => {
-    const p = await getProject(req), abs = jailW(p, String(req.query.path || ''));
+    const p = await getProject(req), abs = await jailW(p, String(req.query.path || ''));
     if (abs === fs.realpathSync(p.dir)) fail(400, 'cannot_delete_root');
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     fs.rmSync(abs, { recursive: true, force: true });
@@ -206,7 +206,7 @@ export function projectsRouter() {
   route.put('/projects/:id/upload', 'files.write', rawBody, async (req, res) => {
     const p = await getProject(req);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
-    const abs = jailW(p, String(req.query.path || ''));
+    const abs = await jailW(p, String(req.query.path || ''));
     if (abs === fs.realpathSync(p.dir)) fail(400, 'invalid_path');
     if (!Buffer.isBuffer(req.body)) fail(400, 'file_required');
     if (fs.existsSync(abs)) { if (fs.statSync(abs).isDirectory()) fail(409, 'exists_directory'); if (req.query.overwrite !== '1') fail(409, 'exists'); }
@@ -282,7 +282,7 @@ export function projectsRouter() {
     const p = await getProject(req), { label } = validate(z.object({ label: z.string().min(1).max(120).default('Manual checkpoint') }), req.body);
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const cp = await createCheckpoint(p.id, p.dir, { label, author: 'user' });
-    recordCheckpointMarks(p.id, cp.id);
+    await recordCheckpointMarks(p.id, cp.id);
     audit(req.user.id, 'checkpoint.create', p.name, { label });
     res.status(201).json(cp);
   });
@@ -298,9 +298,9 @@ export function projectsRouter() {
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const out = await restoreCheckpoint(p.id, p.dir, req.params.cp).catch((e) => fail(400, 'restore_failed', { message: e.message }));
     // Sessions go back with the files. The "Before restore" checkpoint remembers where they stood, so rolling forward restores them too.
-    recordCheckpointMarks(p.id, out.before.id);
-    const conversations = rollBackMessages(req.params.cp);
-    copyCheckpointMarks(req.params.cp, out.after.id);
+    await recordCheckpointMarks(p.id, out.before.id);
+    const conversations = await rollBackMessages(req.params.cp);
+    await copyCheckpointMarks(req.params.cp, out.after.id);
     audit(req.user.id, 'checkpoint.restore', p.name, { to: req.params.cp });
     res.json({ ...out, conversations });
   });

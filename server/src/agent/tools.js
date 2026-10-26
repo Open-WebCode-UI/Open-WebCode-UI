@@ -417,7 +417,7 @@ async function runTool(name, args, ctx, meta) {
       }
       case 'create_checkpoint': {
         const cp = await createCheckpoint(ctx.projectId, ctx.root, { label: String(args.label || 'Agent checkpoint').slice(0, 120), author: 'agent', dataDir: ctx.dataDir });
-        ctx.markCheckpoint?.(cp);
+        await ctx.markCheckpoint?.(cp);
         ctx.onCheckpoint?.(cp);
         return `Checkpoint created: ${cp.id.slice(0, 8)} "${cp.label}"`;
       }
@@ -426,7 +426,7 @@ async function runTool(name, args, ctx, meta) {
         const g = await gate(ctx, args.command);
         if (!g.allowed) return g.withNote('The user denied this command.');
         const pre = await createCheckpoint(ctx.projectId, ctx.root, { label: `Before: ${String(args.command).slice(0, 60)}`, author: 'system', dataDir: ctx.dataDir });
-        ctx.markCheckpoint?.(pre);
+        await ctx.markCheckpoint?.(pre);
         ctx.onCheckpoint?.(pre);
         const r = ctx.exec ? await ctx.exec(args.command) : await runShell(args.command, fs.realpathSync(ctx.root), ctx.shell); // ctx.exec = the project's persistent, viewable agent shell
         return g.withNote(`exit=${r.code}${r.timedOut ? ' (timed out)' : ''}\n${r.output}`);
