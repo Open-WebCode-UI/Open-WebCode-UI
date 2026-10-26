@@ -8,7 +8,13 @@ fs.mkdirSync(dataDir, { recursive: true });
 function loadKey() {
   if (process.env.ENCRYPTION_KEY) return crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest();
   const keyFile = path.join(dataDir, '.encryption-key');
-  if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+  if (!fs.existsSync(keyFile)) {
+    // Several processes can start at once (the first run, or parallel tests). The key is written in full under a temporary name and
+    // hard-linked into place, which fails if another process got there first, so nobody reads a half-written key.
+    const tmp = `${keyFile}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+    fs.writeFileSync(tmp, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+    try { fs.linkSync(tmp, keyFile); } catch (e) { if (e.code !== 'EEXIST') throw e; } finally { fs.rmSync(tmp, { force: true }); }
+  }
   return Buffer.from(fs.readFileSync(keyFile, 'utf8').trim(), 'hex');
 }
 

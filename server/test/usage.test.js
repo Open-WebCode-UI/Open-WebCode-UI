@@ -1,4 +1,7 @@
 import { loadSettings } from '../src/settings.js';
+import { getKnex } from '../src/db/index.js';
+
+const upsertGeneral = (value) => getKnex()('settings').insert({ key: 'general', value }).onConflict('key').merge();
 import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login, makeRole, addProvider, fakeAdapterFactory } from './helpers.js';
@@ -37,7 +40,7 @@ describe('usage, cost, and reports', () => {
     await drain(c.post('/api/chat/turn').send({ chatType: 'coding', message: 'hi', modelId }));
     const list = async () => (await c.get('/api/conversations?kind=chat&chatType=coding')).body[0];
     expect(await list()).not.toHaveProperty('cost'); expect(await list()).not.toHaveProperty('tokens');
-    (await sqlDb().prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('general', ?)").run(JSON.stringify({ showSessionCost: true }))); await loadSettings();
+    (await upsertGeneral(JSON.stringify({ showSessionCost: true }))); await loadSettings();
     const shown = await list(); expect(shown.cost).toBeCloseTo(0.006); expect(shown.tokens).toBeGreaterThan(0);
   });
 

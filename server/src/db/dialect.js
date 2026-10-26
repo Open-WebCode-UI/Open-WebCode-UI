@@ -18,7 +18,8 @@ export const affected = (n) => Number(n) || 0;
 /** Seconds since the Unix epoch, as the SQL expression for a column default or UPDATE. The app normally passes JS now(). */
 export function nowEpoch(knex) {
   switch (engineOf(knex)) {
-    case 'postgres': return knex.raw('CAST(EXTRACT(EPOCH FROM NOW()) AS BIGINT)');
+    // FLOOR, not a plain cast: a cast rounds, which can put a row's time up to half a second ahead of the application's clock.
+    case 'postgres': return knex.raw('CAST(FLOOR(EXTRACT(EPOCH FROM NOW())) AS BIGINT)');
     case 'mariadb': return knex.raw('UNIX_TIMESTAMP()');
     default: return knex.raw("CAST(strftime('%s','now') AS INTEGER)");
   }

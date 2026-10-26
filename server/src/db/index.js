@@ -8,7 +8,11 @@ let current = null;
 
 /** Opens a database (a Knex handle), brings its schema up to date, seeds the built-in roles and loads the settings cache. */
 export async function openDb(file = ':memory:') {
-  const knex = createKnex({ client: 'sqlite', file });
+  return prepareDb(createKnex({ client: 'sqlite', file }));
+}
+
+/** Brings a fresh or existing database (any engine) to the current schema, seeds the built-in roles and loads the settings cache. */
+export async function prepareDb(knex) {
   try {
     await migrateToLatest(knex);
     await seedRoles(knex);
@@ -19,14 +23,8 @@ export async function openDb(file = ':memory:') {
 
 /** Opens the configured database for the server process (see db/connection.js for how the engine is chosen). */
 export async function initDb(dbConfig = resolveDbConfig()) {
-  const knex = createKnex(dbConfig);
-  try {
-    await migrateToLatest(knex);
-    await seedRoles(knex);
-    await loadSettings(knex);
-  } catch (e) { await knex.destroy(); throw e; }
-  current = knex;
-  return knex;
+  current = await prepareDb(createKnex(dbConfig));
+  return current;
 }
 
 export async function seedRoles(knex) {

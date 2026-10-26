@@ -33,7 +33,7 @@ export async function usageReport({ from = 0, to = Math.floor(Date.now() / 1000)
   const inRange = (q, col = 'ts') => q.where(col, '>=', from).where(col, '<', to);
   const modelKey = k.raw('COALESCE(model_id, model_label)');
 
-  const byModel = (await inRange(k('usage')).groupBy(modelKey, 'provider_name')
+  const byModel = (await inRange(k('usage')).groupBy(modelKey).groupBy('provider_name')
     .select({ model: modelKey, provider: 'provider_name', label: k.raw('MAX(model_label)'), requests: k.raw('COUNT(*)'), inputTokens: k.raw('SUM(input_tokens)'), outputTokens: k.raw('SUM(output_tokens)'),
       estimatedRequests: k.raw('SUM(estimated)'), cost: k.raw('SUM(cost)') })).sort(byCostThen('model'));
 
@@ -50,7 +50,7 @@ export async function usageReport({ from = 0, to = Math.floor(Date.now() / 1000)
     .select({ day, cost: k.raw('SUM(cost)'), tokens: k.raw('SUM(input_tokens + output_tokens)'), requests: k.raw('COUNT(*)'), activeUsers: k.raw('COUNT(DISTINCT user_id)') }))
     .sort((a, b) => a.day.localeCompare(b.day));
   // Each day's spend split by model, for the stacked daily chart.
-  const byDayModel = (await inRange(k('usage')).groupBy(day, modelKey, 'provider_name')
+  const byDayModel = (await inRange(k('usage')).groupBy(day).groupBy(modelKey).groupBy('provider_name')
     .select({ day, model: modelKey, provider: 'provider_name', cost: k.raw('SUM(cost)'), requests: k.raw('COUNT(*)') }))
     .sort((a, b) => a.day.localeCompare(b.day) || b.cost - a.cost);
   // What the spend went on: the agent, the chat tabs, course tutors/exercises, or context compaction.

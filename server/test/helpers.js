@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { generateSync } from 'otplib';
-import { openDb, setDb, getKnex } from '../src/db/index.js';
+import { afterAll } from 'vitest';
+import { openDb, prepareDb, setDb, getKnex } from '../src/db/index.js';
+import { SUITE_ENGINE, makeTestKnex, resetDatabase } from './engines.js';
 import { sqlDb } from './db-sql.js';
 import { createApp } from '../src/app.js';
 import { createLocalUser } from '../src/users.js';
@@ -14,9 +16,26 @@ import { encrypt } from '../src/crypto.js';
 export const PW = 'Correct-Horse-Battery-9';
 
 import { config } from '../src/config.js';
-export async function freshDb() {
-  config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-data-')); // isolated per test
-  const db = await openDb(':memory:'); await setDb(db); resetRateLimits(); return db; }
+// The database for each test: in memory on SQLite. On PostgreSQL or MariaDB a file gets one database on the server (TEST_ENGINE), which
+// is emptied before every test, so each test starts from the same state a new database would give. Creating and migrating a database
+// is too slow to do per test on MariaDB.
+let fileDb = null, queue = Promise.resolve();
+afterAll(async () => { await fileDb?.drop(); fileDb = null; });
+export function freshDb() {
+  const run = queue.then(async () => {
+    config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-data-')); // isolated per test
+    let db;
+    if (SUITE_ENGINE === 'sqlite') db = await openDb(':memory:');
+    else {
+      if (!fileDb) { fileDb = await makeTestKnex(SUITE_ENGINE); await prepareDb(fileDb.knex); }
+      else await resetDatabase(fileDb.knex, SUITE_ENGINE);
+      db = await prepareDb(fileDb.knex);
+    }
+    await setDb(db); resetRateLimits(); return db;
+  });
+  queue = run.catch(() => {});
+  return run;
+}
 export const tmpDir = (p = 'agentic-') => fs.mkdtempSync(path.join(os.tmpdir(), p));
 
 // Scripted fake LLM: each call to stream() consumes the next script step (array of events).

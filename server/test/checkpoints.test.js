@@ -9,7 +9,8 @@ let root, data;
 beforeEach(() => { root = tmpDir('cp-proj-'); data = tmpDir('cp-data-'); fs.writeFileSync(path.join(root, 'keep.txt'), 'v1'); fs.writeFileSync(path.join(root, 'gone.txt'), 'bye'); });
 const read = (f) => fs.readFileSync(path.join(root, f), 'utf8');
 
-describe('checkpoints', () => {
+// Git-heavy: each test runs several git commands, so allow more than the default 30 seconds on a loaded machine.
+describe('checkpoints', { timeout: 120000 }, () => {
   it('creates and lists checkpoints newest-first with author', async () => {
     await createCheckpoint(1, root, { label: 'first', author: 'user', dataDir: data });
     await createCheckpoint(1, root, { label: 'second', author: 'agent', dataDir: data });
@@ -53,7 +54,7 @@ describe('checkpoints', () => {
   });
 });
 
-describe('checkpoint API', () => {
+describe('checkpoint API', { timeout: 120000 }, () => {
   it('create/list/restore with RBAC, no step-up, and active-turn protection', async () => {
     await freshDb(); const app = createApp();
     await makeRole('viewer', ['project.read', 'project.write', 'files.read', 'files.write', 'checkpoint.read']);

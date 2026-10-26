@@ -9,8 +9,10 @@ import { saveSettings, getSettings } from '../src/settings.js';
 
 import { revokeUserSessions } from '../src/auth/session.js';
 
-const SHELL = () => saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
+const SHELL = async () => saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Waits until the shell has printed its prompt, so typed input is not sent while it is still starting up.
+const untilPrompt = async (c) => { for (let i = 0; i < 300 && !c.msgs.some((m) => m.type === 'output' && m.data.includes('$ ')); i++) await sleep(50); };
 let mgr;
 beforeEach(() => { mgr = new TerminalManager({ idleMs: 50 }); });
 afterEach(() => mgr.killAll());
@@ -106,16 +108,16 @@ describe('terminal REST API', () => {
     const r = await shellUser.post('/api/terminal/sessions').send({ projectId: project.id }); expect(r.status).toBe(403); expect(r.body.error).toBe('shell_disabled');
   });
   it('needs the terminal.use permission (not granted to developers by default)', async () => {
-    SHELL(); const p = (await dev.post('/api/projects').send({ name: 'devproj' })).body;
+    await SHELL(); const p = (await dev.post('/api/projects').send({ name: 'devproj' })).body;
     expect((await dev.post('/api/terminal/sessions').send({ projectId: p.id })).status).toBe(403);
     expect((await dev.get(`/api/terminal/status?projectId=${p.id}`)).body).toMatchObject({ enabled: true, canUse: false, canView: false });
   });
   it('requires recent re-verification (step-up) to open a shell', async () => {
-    SHELL(); const stale = await login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const p = (await stale.post('/api/projects').send({ name: 'sp' })).body;
+    await SHELL(); const stale = await login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const p = (await stale.post('/api/projects').send({ name: 'sp' })).body;
     const r = await stale.post('/api/terminal/sessions').send({ projectId: p.id }); expect(r.status).toBe(403); expect(r.body.error).toBe('mfa_required');
   });
   it('opens (once per project), reports status, and can only be closed by its owner', async () => {
-    SHELL();
+    await SHELL();
     const a = await shellUser.post('/api/terminal/sessions').send({ projectId: project.id }); expect(a.status).toBe(201); expect(a.body.id).toMatch(/^[0-9a-f]{32}$/);
     expect((await shellUser.post('/api/terminal/sessions').send({ projectId: project.id })).body.id).toBe(a.body.id);
     expect((await shellUser.get(`/api/terminal/status?projectId=${project.id}`)).body).toMatchObject({ enabled: true, canUse: true, userSession: a.body.id });
@@ -125,11 +127,11 @@ describe('terminal REST API', () => {
     expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action IN ('terminal.open','terminal.close')").get()).c).toBe(2);
   });
   it('cannot open a shell in someone else\'s project', async () => {
-    SHELL(); const other = await login(app, { username: 'other2', roles: ['shellers'] });
+    await SHELL(); const other = await login(app, { username: 'other2', roles: ['shellers'] });
     expect((await other.post('/api/terminal/sessions').send({ projectId: project.id })).status).toBe(404);
   });
   it('switching shell mode off ends every live shell', async () => {
-    SHELL(); const admin = await login(app, { username: 'rootadmin', roles: ['administrator'] });
+    await SHELL(); const admin = await login(app, { username: 'rootadmin', roles: ['administrator'] });
     const a = (await shellUser.post('/api/terminal/sessions').send({ projectId: project.id })).body.id;
     expect(mgr.get(a)).not.toBeNull();
     // terminals singleton is the one admin routes use; here we assert the manager-level behavior plus the route's audit
@@ -147,7 +149,7 @@ describe('terminal WebSocket', () => {
   });
   const text = (c) => c.msgs.filter((m) => m.type === 'output').map((m) => m.data).join('');
   beforeEach(async () => {
-    await freshDb(); SHELL(); app = createApp({ deps: { terminals: mgr } });
+    await freshDb(); await SHELL(); app = createApp({ deps: { terminals: mgr } });
     await makeRole('shellers', ['project.read', 'project.write', 'files.read', 'terminal.use', 'agent.shell.run', 'agent.plan']);
     user = await login(app, { username: 'wsuser1', roles: ['shellers'] }); other = await login(app, { username: 'wsother', roles: ['shellers'] });
     project = (await user.post('/api/projects').send({ name: 'ws1' })).body;
@@ -157,13 +159,13 @@ describe('terminal WebSocket', () => {
   afterEach(() => new Promise((r) => { mgr.killAll(); server.closeAllConnections?.(); server.close(r); }));
 
   it('lets the owner type into a real shell and see the output', async () => {
-    const c = await connect(term); expect(c.status).toBe(101);
+    const c = await connect(term); expect(c.status).toBe(101); await untilPrompt(c);
     c.ws.send(JSON.stringify({ type: 'input', data: 'echo from-websocket\n' })); await sleep(600);
     expect(c.msgs[0]).toMatchObject({ type: 'ready', kind: 'user' }); expect(text(c)).toContain('from-websocket');
     c.ws.send(JSON.stringify({ type: 'resize', cols: 150, rows: 50 })); await sleep(100); expect(mgr.get(term).cols).toBe(150); c.ws.close();
   });
   it('reattaching replays the earlier scrollback (a page reload does not lose the session)', async () => {
-    const a = await connect(term); a.ws.send(JSON.stringify({ type: 'input', data: 'echo remembered\n' })); await sleep(500); a.ws.close(); await sleep(100);
+    const a = await connect(term); await untilPrompt(a); a.ws.send(JSON.stringify({ type: 'input', data: 'echo remembered\n' })); await sleep(500); a.ws.close(); await sleep(100);
     const b = await connect(term); await sleep(200); expect(text(b)).toContain('remembered'); b.ws.close();
   });
   it('rejects unauthenticated, cross-origin, wrong-owner, and unknown-session handshakes', async () => {
@@ -187,7 +189,7 @@ describe('terminal WebSocket', () => {
   it('closes the socket immediately when the shell is killed or exits', async () => {
     const a = await connect(term); await sleep(100); mgr.close(term); await sleep(300);
     expect(a.msgs.some((m) => m.type === 'exit')).toBe(true); expect(a.ws.readyState).toBeGreaterThanOrEqual(2);
-    const t2 = (await user.post('/api/terminal/sessions').send({ projectId: project.id })).body.id; const b = await connect(t2); await sleep(100);
+    const t2 = (await user.post('/api/terminal/sessions').send({ projectId: project.id })).body.id; const b = await connect(t2); await untilPrompt(b);
     b.ws.send(JSON.stringify({ type: 'input', data: 'exit\n' })); await sleep(700); expect(b.msgs.some((m) => m.type === 'exit')).toBe(true); expect(b.ws.readyState).toBeGreaterThanOrEqual(2);
   });
   it('ends the connection when the administrator turns shell mode off', async () => {

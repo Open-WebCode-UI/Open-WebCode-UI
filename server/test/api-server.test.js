@@ -11,7 +11,7 @@ import { resetRateLimits } from '../src/ratelimit.js';
 import { toNeutral } from '../src/routes/v1.js';
 
 let app, script, admin, user, modelRow;
-const enable = (over = {}) => saveSettings('api', { ...getSettings('api'), enabled: true, ...over });
+const enable = async (over = {}) => saveSettings('api', { ...getSettings('api'), enabled: true, ...over });
 const v1 = (key) => (method, url) => request(app)[method](url).set('Authorization', `Bearer ${key}`);
 async function newKey(client, body = { name: 'ci' }) {
   const r = await client.post('/api/api-keys').send(body);
@@ -68,7 +68,7 @@ describe('API keys: who may do what', () => {
     expect((await user.post('/api/api-keys').send({ name: 'b', expiresInDays: 1 })).status).toBe(409);
   });
   it('lets administrators list and revoke every key; others cannot', async () => {
-    enable();
+    await enable();
     const k = await newKey(user);
     expect((await user.get('/api/admin/api-keys')).status).toBe(403);
     const all = await admin.get('/api/admin/api-keys');
@@ -95,18 +95,18 @@ describe('/v1 authentication', () => {
     expect(r.status).toBe(503); expect(r.body.error.code).toBe('api_disabled');
   });
   it('rejects missing, malformed and unknown keys in the OpenAI error envelope', async () => {
-    enable();
+    await enable();
     for (const h of [undefined, 'Bearer', 'Bearer nope', 'Basic abc', 'Bearer owui_unknown']) {
       const r = await request(app).get('/v1/models').set(...(h ? ['Authorization', h] : ['X-Other', '1']));
       expect(r.status).toBe(401); expect(r.body.error).toMatchObject({ type: 'authentication_error', code: 'invalid_api_key' });
     }
   });
   it('does not accept a browser session in place of a key', async () => {
-    enable();
+    await enable();
     expect((await user.get('/v1/models')).status).toBe(401);
   });
   it('stops working when the owner loses api.use, is disabled, or the key expires', async () => {
-    enable();
+    await enable();
     const k = await newKey(user);
     expect((await v1(k.key)('get', '/v1/models')).status).toBe(200);
     (await sqlDb().prepare("DELETE FROM user_roles WHERE user_id=?").run(user.id));
@@ -120,7 +120,7 @@ describe('/v1 authentication', () => {
     expect((await v1(k.key)('get', '/v1/models')).status).toBe(401);
   });
   it('rate limits per key', async () => {
-    enable({ rateLimitPerMin: 2 });
+    await enable({ rateLimitPerMin: 2 });
     const k = await newKey(user);
     for (let i = 0; i < 2; i++) expect((await v1(k.key)('get', '/v1/models')).status).toBe(200);
     const r = await v1(k.key)('get', '/v1/models');
@@ -129,13 +129,13 @@ describe('/v1 authentication', () => {
     expect((await v1(k.key)('get', '/v1/models')).status).toBe(200);
   });
   it('throttles repeated bad keys from one address', async () => {
-    enable();
+    await enable();
     let last;
     for (let i = 0; i < 22; i++) last = await request(app).get('/v1/models').set('Authorization', 'Bearer owui_wrong');
     expect(last.status).toBe(429);
   });
   it('answers unknown /v1 paths as JSON, not the web app', async () => {
-    enable();
+    await enable();
     const k = await newKey(user);
     const r = await v1(k.key)('get', '/v1/nothing');
     expect(r.status).toBe(404); expect(r.body.error.code).toBe('not_found');
@@ -144,7 +144,7 @@ describe('/v1 authentication', () => {
 
 describe('/v1/models', () => {
   it('lists usable models as <connection>/<model>, honouring role allow-lists and key restrictions', async () => {
-    enable();
+    await enable();
     const db = sqlDb();
     const pid = Number((await db.prepare("INSERT INTO providers (name,type,config,allowed_roles) VALUES ('private','openai','{}','[\"developer\"]')").run()).lastInsertRowid);
     const second = Number((await db.prepare("INSERT INTO models (provider_id, model_id) VALUES (?, 'hidden')").run(pid)).lastInsertRowid);
@@ -161,7 +161,7 @@ describe('/v1/models', () => {
 
 describe('/v1/chat/completions', () => {
   it('returns a completion, records usage for the key owner, and applies model limits', async () => {
-    enable(); script.push([{ type: 'text', text: 'Hello ' }, { type: 'text', text: 'there' }]);
+    await enable(); script.push([{ type: 'text', text: 'Hello ' }, { type: 'text', text: 'there' }]);
     const k = await newKey(user);
     const r = await chat(k.key, {});
     expect(r.status).toBe(200);
@@ -170,7 +170,7 @@ describe('/v1/chat/completions', () => {
     expect((await sqlDb().prepare("SELECT user_id, kind, estimated FROM usage WHERE kind='api'").get())).toEqual({ user_id: user.id, kind: 'api', estimated: 1 });
   });
   it('passes system text, history and tools through, and returns tool calls', async () => {
-    enable(); const seen = [];
+    await enable(); const seen = [];
     app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } });
     script.push([{ type: 'tool_call', id: 'c1', name: 'get_weather', args: { city: 'Oslo' } }]);
     const dev = await login(app, { username: 'caller', roles: ['api-user'] }), k = await newKey(dev);
@@ -186,7 +186,7 @@ describe('/v1/chat/completions', () => {
     expect(r.body.choices[0]).toMatchObject({ finish_reason: 'tool_calls', message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] } });
   });
   it('streams server-sent events ending in [DONE], with usage on request', async () => {
-    enable(); script.push([{ type: 'text', text: 'Hel' }, { type: 'text', text: 'lo' }, { type: 'usage', inputTokens: 5, outputTokens: 2 }]);
+    await enable(); script.push([{ type: 'text', text: 'Hel' }, { type: 'text', text: 'lo' }, { type: 'usage', inputTokens: 5, outputTokens: 2 }]);
     const k = await newKey(user);
     const r = await chat(k.key, { stream: true, stream_options: { include_usage: true } }).buffer(true).parse((res, cb) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => cb(null, d)); });
     expect(r.status).toBe(200); expect(r.headers['content-type']).toMatch(/text\/event-stream/);
@@ -199,7 +199,7 @@ describe('/v1/chat/completions', () => {
     expect((await sqlDb().prepare("SELECT input_tokens i, output_tokens o, estimated e FROM usage WHERE kind='api'").get())).toEqual({ i: 5, o: 2, e: 0 });
   });
   it('refuses unknown models, models outside the key, and unsupported input', async () => {
-    enable();
+    await enable();
     const k = await newKey(user);
     expect((await chat(k.key, { model: 'p/nope' })).status).toBe(404);
     const narrow = await newKey(user, { name: 'n', modelIds: [modelRow] });
@@ -214,7 +214,7 @@ describe('/v1/chat/completions', () => {
     expect(bad.status).toBe(400); expect(bad.body.error.code).toBe('invalid_json');
   });
   it('hides upstream failures from the caller', async () => {
-    enable();
+    await enable();
     app = createApp({ deps: { adapterFactory: () => ({ async *stream() { throw new Error('secret upstream detail sk-123'); } }) } });
     const u = await login(app, { username: 'failer', roles: ['api-user'] }), k = await newKey(u);
     const r = await chat(k.key, {});
@@ -228,7 +228,7 @@ describe('/v1/chat/completions', () => {
 describe('documentation', () => {
   it('is visible only with api.docs.read', async () => {
     const dev = await login(app, { username: 'devperson' });
-    for (const p of ['/api/docs', '/api/docs/openapi.yaml', '/api/docs/redoc.js']) {
+    for (const p of ['/api/docs', '/api/docs/openapi.yaml']) {
       expect((await dev.get(p)).status).toBe(403);
       expect((await request(app).get(p)).status).toBe(401);
     }
@@ -237,13 +237,13 @@ describe('documentation', () => {
     if (fs.existsSync(new URL('../openapi/dist/index.html', import.meta.url))) {
       expect(page.status).toBe(200);
       expect(page.headers['content-security-policy']).toMatch(/script-src 'self' 'sha256-/);
-      expect(page.text).not.toMatch(/cdn\.redocly\.com|fonts\.googleapis\.com/);
+      expect(page.text).not.toMatch(/<(script|link)\b[^>]*\b(src|href)="https?:\/\/|from "https?:\/\/|fonts\.googleapis\.com/);
     } else expect(page.status).toBe(503); // run "npm run docs:build"
   });
   it('documents exactly the routes the server has', () => {
     const spec = parse(fs.readFileSync(SPEC_FILE, 'utf8'));
     const documented = new Set(Object.entries(spec.paths).flatMap(([p, ops]) => Object.keys(ops).filter((m) => ['get', 'post', 'put', 'delete'].includes(m)).map((m) => `${m.toUpperCase()} ${p}`)));
-    const served = new Set(registry.filter((r) => /^\/v1\/|^\/api\/(api-keys|admin\/api-keys|admin\/api-settings|docs)/.test(r.path) && r.path !== '/api/docs/redoc.js')
+    const served = new Set(registry.filter((r) => /^\/v1\/|^\/api\/(api-keys|admin\/api-keys|admin\/api-settings|docs)/.test(r.path))
       .map((r) => `${r.method} ${r.path.replace(/:(\w+)/g, '{$1}')}`));
     expect([...documented].sort()).toEqual([...served].sort());
   });

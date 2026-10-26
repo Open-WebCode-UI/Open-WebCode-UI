@@ -1,4 +1,5 @@
 import { loadSettings } from '../src/settings.js';
+import { getKnex } from '../src/db/index.js';
 import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildTimeline, estimateTokens, contextInfo, renderTranscript, COMMAND_RE, DEFAULT_CONTEXT_WINDOW } from '../src/sessions.js';
@@ -126,7 +127,7 @@ describe('context warnings and compaction', () => {
     await setup([text('ok'), text('ok'), text('ok'), text('ok')]);
     let ev = await turn({ message: 'hi' }); const base = ev.find((e) => e.type === 'context'); expect(ev.at(-1).type).toBe('done'); expect(ev.indexOf(base)).toBe(ev.length - 2); // right before done
     expect(base).toMatchObject({ level: 'ok', limit: DEFAULT_CONTEXT_WINDOW }); expect(base.tokens).toBeGreaterThan(500); // the fixed prompt counts too
-    const limit = Math.round(base.tokens / 0.4); (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId)); await loadSettings(); (await sqlDb().prepare("INSERT INTO settings (key,value) VALUES ('general', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({ defaultModels: { plan: modelId, act: modelId, chat: null } })));
+    const limit = Math.round(base.tokens / 0.4); (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId)); await loadSettings(); await getKnex()('settings').insert({ key: 'general', value: JSON.stringify({ defaultModels: { plan: modelId, act: modelId, chat: null } }) }).onConflict('key').merge();
     const id = ev[0].conversationId, chars = (frac) => 'x'.repeat(Math.round(limit * frac * 4));
     ev = await turn({ message: 'again', conversationId: id }); expect(ev.find((e) => e.type === 'context'), JSON.stringify(ev)).toMatchObject({ limit, level: 'ok' });
     ev = await turn({ message: chars(0.3), conversationId: id }); expect(ev.find((e) => e.type === 'context').level).toBe('warn');
