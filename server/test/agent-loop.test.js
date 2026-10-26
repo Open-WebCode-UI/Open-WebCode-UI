@@ -51,7 +51,7 @@ describe('agent loop', () => {
     expect((await t.run()).stopped).toBe('complete');
     expect(t.messages.find((m) => m.role === 'tool').content).toMatch(/^Error:/);
     const ctl = new AbortController(); ctl.abort();
-    expect((await mk([[{ type: 'text', text: 'x' }]]).run({ signal: ctl.signal })).stopped).toBe('aborted');
+    expect((await (await mk([[{ type: 'text', text: 'x' }]])).run({ signal: ctl.signal })).stopped).toBe('aborted');
   });
   it('tool results cannot grant instructions: prompt-injected file text is returned only as tool data', async () => {
     const t = mk([[call('read_file', { path: 'evil.txt' }, 'r')], [{ type: 'text', text: 'noted' }]]);

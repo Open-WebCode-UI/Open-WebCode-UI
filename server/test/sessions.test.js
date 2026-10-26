@@ -1,7 +1,9 @@
+import { loadSettings } from '../src/settings.js';
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildTimeline, estimateTokens, contextInfo, renderTranscript, COMMAND_RE, DEFAULT_CONTEXT_WINDOW } from '../src/sessions.js';
 import { freshDb, createApp, login, makeRole, addProvider, fakeAdapterFactory } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 
 const row = (m, extra = {}) => ({ role: m.role, content: JSON.stringify(m), archived: 0, kind: null, ...extra });
 const call = (name, args, id) => ({ id: id || `${name}1`, name, args });
@@ -60,18 +62,18 @@ describe('sessions API', () => {
   let app, u, project, modelId, seen;
   const turn = (who, body) => who.post('/api/agent/turn').send({ message: 'hi', mode: 'plan', modelId, ...body }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
   const events = async (who, body) => parse((await turn(who, body)).body);
-  const setup = (script, user = 'sessuser1') => { freshDb(); modelId = addProvider(); seen = []; app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } }); u = login(app, { username: user }); return u.post('/api/projects').send({ name: 'sp' }).then((r) => { project = r.body; }); };
+  const setup = async (script, user = 'sessuser1') => { await freshDb(); modelId = await addProvider(); seen = []; app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } }); u = await login(app, { username: user }); return u.post('/api/projects').send({ name: 'sp' }).then((r) => { project = r.body; }); };
   const text = (t) => [{ type: 'text', text: t }];
 
   it('lists sessions per project, newest first, with mode, size, and message count; other users and projects are separate', async () => {
     await setup([text('one'), text('two'), text('three')]);
-    const a = (await events(u, { projectId: project.id, message: 'first topic' }))[0].conversationId; getDb().prepare('UPDATE conversations SET updated_at=updated_at-100 WHERE id=?').run(a);
+    const a = (await events(u, { projectId: project.id, message: 'first topic' }))[0].conversationId; (await sqlDb().prepare('UPDATE conversations SET updated_at=updated_at-100 WHERE id=?').run(a));
     const b = (await events(u, { projectId: project.id, message: 'second topic', mode: 'act' }))[0].conversationId;
     const list = (await u.get(`/api/sessions?projectId=${project.id}`)).body;
     expect(list.map((s) => s.id)).toEqual([b, a]); expect(list[0]).toMatchObject({ title: 'second topic', mode: 'act', messages: 2, running: false }); expect(list[0].context).toMatchObject({ level: 'ok', limit: DEFAULT_CONTEXT_WINDOW });
     const p2 = (await u.post('/api/projects').send({ name: 'other' })).body; expect((await u.get(`/api/sessions?projectId=${p2.id}`)).body).toEqual([]);
-    const other = login(app, { username: 'sessuser2' }); expect((await other.get(`/api/sessions?projectId=${project.id}`)).status).toBe(404); // not their project
-    expect((await login(app, { username: 'sessuser3' }).get(`/api/sessions/${a}`)).status).toBe(404);
+    const other = await login(app, { username: 'sessuser2' }); expect((await other.get(`/api/sessions?projectId=${project.id}`)).status).toBe(404); // not their project
+    expect((await (await login(app, { username: 'sessuser3' })).get(`/api/sessions/${a}`)).status).toBe(404);
   });
   it('opening a session returns its full timeline, mode, and context so the user can continue', async () => {
     await setup([[{ type: 'tool_call', id: 't1', name: 'list_dir', args: { path: '.' } }], text('Here is the project.')]);
@@ -97,12 +99,12 @@ describe('sessions API', () => {
     await setup([text('ok')]); const id = (await events(u, { projectId: project.id, message: 'topic' }))[0].conversationId;
     expect((await u.put(`/api/sessions/${id}`).send({ title: '  Auth work  ' })).body.title).toBe('Auth work'); expect((await u.put(`/api/sessions/${id}`).send({ title: '' })).status).toBe(400);
     expect((await u.get(`/api/sessions?projectId=${project.id}`)).body[0].title).toBe('Auth work');
-    expect((await login(app, { username: 'sessuser4' }).put(`/api/sessions/${id}`).send({ title: 'x' })).status).toBe(404);
-    expect((await u.del(`/api/sessions/${id}`)).status).toBe(200); expect((await u.get(`/api/sessions/${id}`)).status).toBe(404); expect(getDb().prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=?').get(id).c).toBe(0);
+    expect((await (await login(app, { username: 'sessuser4' })).put(`/api/sessions/${id}`).send({ title: 'x' })).status).toBe(404);
+    expect((await u.del(`/api/sessions/${id}`)).status).toBe(200); expect((await u.get(`/api/sessions/${id}`)).status).toBe(404); expect((await sqlDb().prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=?').get(id)).c).toBe(0);
   });
   it('rejects a second turn on a session that is still running, and shows it as running', async () => {
-    freshDb(); modelId = addProvider(); let release; const gate = new Promise((r) => { release = r; });
-    app = createApp({ deps: { adapterFactory: () => ({ async *stream() { await gate; yield { type: 'text', text: 'late' }; yield { type: 'done' }; } }) } }); u = login(app, { username: 'sessuser5' });
+    await freshDb(); modelId = await addProvider(); let release; const gate = new Promise((r) => { release = r; });
+    app = createApp({ deps: { adapterFactory: () => ({ async *stream() { await gate; yield { type: 'text', text: 'late' }; yield { type: 'done' }; } }) } }); u = await login(app, { username: 'sessuser5' });
     project = (await u.post('/api/projects').send({ name: 'busy' })).body;
     const first = turn(u, { projectId: project.id }).then((r) => r); await new Promise((r) => setTimeout(r, 300)); // (a superagent request only starts once it is awaited)
     const id = (await u.get(`/api/sessions?projectId=${project.id}`)).body[0]; expect(id.running).toBe(true);
@@ -110,13 +112,13 @@ describe('sessions API', () => {
     const clash = await u.post('/api/agent/turn').send({ projectId: project.id, conversationId: id.id, message: 'again', mode: 'plan', modelId }); expect(clash.status).toBe(409);
     release(); await first; expect((await u.get(`/api/sessions?projectId=${project.id}`)).body[0].running).toBe(false);
   });
-  it('needs agent.plan', async () => { await setup([]); makeRole('chatonly', ['chat.use']); const c = login(app, { username: 'chatonly1', roles: ['chatonly'] }); expect((await c.get(`/api/sessions?projectId=${project.id}`)).status).toBe(403); });
+  it('needs agent.plan', async () => { await setup([]); await makeRole('chatonly', ['chat.use']); const c = await login(app, { username: 'chatonly1', roles: ['chatonly'] }); expect((await c.get(`/api/sessions?projectId=${project.id}`)).status).toBe(403); });
 });
 
 describe('context warnings and compaction', () => {
   let app, u, project, modelId, seen;
   const turn = (body) => u.post('/api/agent/turn').send({ mode: 'plan', modelId, projectId: project.id, ...body }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); }).then((r) => parse(r.body));
-  const setup = async (script, user = 'compactor1') => { freshDb(); modelId = addProvider(); seen = []; app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } }); u = login(app, { username: user }); project = (await u.post('/api/projects').send({ name: 'cp' })).body; };
+  const setup = async (script, user = 'compactor1') => { await freshDb(); modelId = await addProvider(); seen = []; app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } }); u = await login(app, { username: user }); project = (await u.post('/api/projects').send({ name: 'cp' })).body; };
   const text = (t) => [{ type: 'text', text: t }];
   const summary = '## Goal\nBuild the thing\n## Next step\nWrite tests';
 
@@ -124,7 +126,7 @@ describe('context warnings and compaction', () => {
     await setup([text('ok'), text('ok'), text('ok'), text('ok')]);
     let ev = await turn({ message: 'hi' }); const base = ev.find((e) => e.type === 'context'); expect(ev.at(-1).type).toBe('done'); expect(ev.indexOf(base)).toBe(ev.length - 2); // right before done
     expect(base).toMatchObject({ level: 'ok', limit: DEFAULT_CONTEXT_WINDOW }); expect(base.tokens).toBeGreaterThan(500); // the fixed prompt counts too
-    const limit = Math.round(base.tokens / 0.4); getDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId); getDb().prepare("INSERT INTO settings (key,value) VALUES ('general', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({ defaultModels: { plan: modelId, act: modelId, chat: null } }));
+    const limit = Math.round(base.tokens / 0.4); (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId)); await loadSettings(); (await sqlDb().prepare("INSERT INTO settings (key,value) VALUES ('general', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({ defaultModels: { plan: modelId, act: modelId, chat: null } })));
     const id = ev[0].conversationId, chars = (frac) => 'x'.repeat(Math.round(limit * frac * 4));
     ev = await turn({ message: 'again', conversationId: id }); expect(ev.find((e) => e.type === 'context'), JSON.stringify(ev)).toMatchObject({ limit, level: 'ok' });
     ev = await turn({ message: chars(0.3), conversationId: id }); expect(ev.find((e) => e.type === 'context').level).toBe('warn');
@@ -132,7 +134,7 @@ describe('context warnings and compaction', () => {
     expect((await u.get(`/api/sessions/${id}`)).body.context).toMatchObject({ level: 'high', limit }); expect((await u.get(`/api/sessions?projectId=${project.id}`)).body[0].context.level).toBe('high'); // same number everywhere
   });
   it('sizes and warnings use the model the session actually used, so every number agrees', async () => {
-    await setup([text('ok')]); getDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(5000, modelId); // no default models configured
+    await setup([text('ok')]); (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(5000, modelId)); // no default models configured await loadSettings();
     const ev = await turn({ message: 'hi' }); const id = ev[0].conversationId, live = ev.find((e) => e.type === 'context');
     expect(live.limit).toBe(5000); expect((await u.get(`/api/sessions/${id}`)).body.context).toMatchObject({ limit: 5000, tokens: live.tokens });
     expect((await u.get(`/api/sessions?projectId=${project.id}`)).body[0].context).toMatchObject({ limit: 5000, tokens: live.tokens });
@@ -148,8 +150,8 @@ describe('context warnings and compaction', () => {
     expect(s.context.tokens).toBeLessThan(1800); // little more than the fixed prompt and the summary
     await turn({ message: 'continue', conversationId: id }); // the model now sees the summary, not the old chat
     expect(seen[2].messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']); expect(seen[2].messages[0].content).toContain('## Next step'); expect(JSON.stringify(seen[2].messages)).not.toContain('build the thing');
-    expect(getDb().prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=? AND archived=1').get(id).c).toBe(2); // kept in the database, just not sent
-    expect(getDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='session.compact'").get().c).toBe(1);
+    expect((await sqlDb().prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=? AND archived=1').get(id)).c).toBe(2); // kept in the database, just not sent
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='session.compact'").get()).c).toBe(1);
   });
   it('compacts with the user\'s own edited instructions, and refuses when the skill is turned off', async () => {
     await setup([text('answer'), text('short summary')]);
@@ -168,8 +170,8 @@ describe('context warnings and compaction', () => {
     await setup([text('x')]); const ev = await turn({ message: '/compact' }); expect(ev.find((e) => e.type === 'notice').text).toMatch(/nothing to compact/i); expect(seen.length).toBe(0);
   });
   it('a failing summary leaves the session untouched', async () => {
-    freshDb(); modelId = addProvider(); let n = 0;
-    app = createApp({ deps: { adapterFactory: () => ({ async *stream() { n += 1; if (n === 2) throw new Error('model down'); yield { type: 'text', text: 'ok' }; yield { type: 'done' }; } }) } }); u = login(app, { username: 'compactor2' }); project = (await u.post('/api/projects').send({ name: 'f' })).body;
+    await freshDb(); modelId = await addProvider(); let n = 0;
+    app = createApp({ deps: { adapterFactory: () => ({ async *stream() { n += 1; if (n === 2) throw new Error('model down'); yield { type: 'text', text: 'ok' }; yield { type: 'done' }; } }) } }); u = await login(app, { username: 'compactor2' }); project = (await u.post('/api/projects').send({ name: 'f' })).body;
     const id = (await turn({ message: 'hello' }))[0].conversationId; const ev = await turn({ message: '/compact', conversationId: id });
     expect(ev.find((e) => e.type === 'error').message).toMatch(/Could not compact/); expect((await u.get(`/api/sessions/${id}`)).body.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
   });

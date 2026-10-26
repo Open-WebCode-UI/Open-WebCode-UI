@@ -11,7 +11,7 @@ export function attachmentsRouter() {
   const raw = (req, res, next) => express.raw({ type: () => true, limit: `${getSettings('general').maxAttachmentMb}mb` })(req, res, next);
   route.put('/attachments', 'provider.use', raw, async (req, res) => {
     const a = await saveUpload(req.user.id, String(req.query.name || 'file'), req.body, { maxBytes: getSettings('general').maxAttachmentMb * 1024 * 1024 });
-    audit(req.user.id, 'attachment.upload', a.kind, { bytes: a.size });
+    await audit(req.user.id, 'attachment.upload', a.kind, { bytes: a.size });
     res.status(201).json(a);
   });
   // Read a stored file back (the owner only). Only images, audio and video are shown inline; they are served under their sniffed type,

@@ -191,7 +191,7 @@ const now = () => Math.floor(Date.now() / 1000);
 export async function designableCourses(userId, { all = false } = {}) {
   const k = getKnex();
   const rows = await k('courses').modify((q) => { if (!all) q.where('owner_id', userId).orWhereIn('id', k('course_instructors').where({ user_id: userId }).select('course_id')); }).orderBy('updated_at', 'desc');
-  const ok = await Promise.all(rows.map((c) => canAuthor(userId, c)));
+  const ok = await Promise.all(rows.map(async (c) => await canAuthor(userId, c)));
   return rows.filter((_, i) => ok[i]);
 }
 
@@ -268,13 +268,13 @@ export function createCourseTools({ userId, courseId }) {
         if (creating) {
           const { assessmentId: id, pageId } = await createAssessmentPage(c.id, { moduleId, title: b.title, content: markdownToDoc(args.markdown ?? ''), mode: st.mode, passScore: st.passPct, maxAttempts: st.maxAttempts });
           await touchCourse();
-          audit(userId, 'course.assessment.create', String(c.id), { assessment: id, via: 'course_design_chat' });
+          await audit(userId, 'course.assessment.create', String(c.id), { assessment: id, via: 'course_design_chat' });
           return `Created assessment "${b.title}" (id ${id}, page ${pageId})${moduleId ? ` in module ${moduleId}` : ' at the top level'}.`;
         }
         await k()('assessments').where({ id: a.id }).update({ title: b.title, mode: st.mode, pass_score: st.passPct, max_attempts: st.maxAttempts });
         if (a.page_id) await k()('course_pages').where({ id: a.page_id }).update({ title: b.title });
         await touchCourse();
-        audit(userId, 'course.assessment.update', String(c.id), { assessment: a.id, via: 'course_design_chat' });
+        await audit(userId, 'course.assessment.update', String(c.id), { assessment: a.id, via: 'course_design_chat' });
         return `Updated assessment "${b.title}" (id ${a.id}).`;
       }
       case 'delete_assessment': {
@@ -282,7 +282,7 @@ export function createCourseTools({ userId, courseId }) {
         if (await attempted(a.id)) return 'Error: learners have already attempted this assessment, so it cannot be deleted here.';
         await deleteAssessmentAndPage(a);
         await touchCourse();
-        audit(userId, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title, via: 'course_design_chat' });
+        await audit(userId, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title, via: 'course_design_chat' });
         return `Deleted assessment "${a.title}" and its questions.`;
       }
       case 'create_question': case 'update_question': {
@@ -305,12 +305,12 @@ export function createCourseTools({ userId, courseId }) {
           const pos = ((await k()('questions').where({ assessment_id: a.id }).max({ m: 'position' }).first()).m ?? -1) + 1;
           const id = await insertId(k()('questions'), { assessment_id: a.id, position: pos, type: b.type, prompt: b.prompt, options_json: s.options, answer_key_json: s.key, points: s.points, code_spec_json: s.spec });
           await touchCourse();
-          audit(userId, 'course.question.create', String(c.id), { assessment: a.id, question: id, via: 'course_design_chat' });
+          await audit(userId, 'course.question.create', String(c.id), { assessment: a.id, question: id, via: 'course_design_chat' });
           return `Added ${b.type} question ${id} to assessment "${a.title}".`;
         }
         await k()('questions').where({ id: q.id }).update({ type: b.type, prompt: b.prompt, options_json: s.options, answer_key_json: s.key, points: s.points, code_spec_json: s.spec });
         await touchCourse();
-        audit(userId, 'course.question.update', String(c.id), { assessment: a.id, question: q.id, via: 'course_design_chat' });
+        await audit(userId, 'course.question.update', String(c.id), { assessment: a.id, question: q.id, via: 'course_design_chat' });
         return `Updated question ${q.id} in assessment "${a.title}".`;
       }
       case 'delete_question': {
@@ -318,7 +318,7 @@ export function createCourseTools({ userId, courseId }) {
         if (await attempted(q.assessment_id)) return 'Error: learners have already attempted this assessment, so its questions are locked.';
         await k()('questions').where({ id: q.id }).del();
         await touchCourse();
-        audit(userId, 'course.question.delete', String(c.id), { assessment: q.assessment_id, question: q.id, via: 'course_design_chat' });
+        await audit(userId, 'course.question.delete', String(c.id), { assessment: q.assessment_id, question: q.id, via: 'course_design_chat' });
         return `Deleted question ${q.id}.`;
       }
       case 'create_module': {
@@ -326,7 +326,7 @@ export function createCourseTools({ userId, courseId }) {
         if (!title || title.length > 200) return 'Error: the title must be 1 to 200 characters.';
         const id = await insertId(k()('course_modules'), { course_id: c.id, position: await nextPosition(c.id), title });
         await touchCourse();
-        audit(userId, 'course.module.create', String(c.id), { module: id, via: 'course_design_chat' });
+        await audit(userId, 'course.module.create', String(c.id), { module: id, via: 'course_design_chat' });
         return `Created module "${title}" (id ${id}).`;
       }
       case 'update_module': {
@@ -335,7 +335,7 @@ export function createCourseTools({ userId, courseId }) {
         if (!title || title.length > 200) return 'Error: the title must be 1 to 200 characters.';
         await k()('course_modules').where({ id: Number(args.module_id) }).update({ title, updated_at: now() });
         await touchCourse();
-        audit(userId, 'course.module.update', String(c.id), { module: Number(args.module_id), via: 'course_design_chat' });
+        await audit(userId, 'course.module.update', String(c.id), { module: Number(args.module_id), via: 'course_design_chat' });
         return `Renamed module ${args.module_id} to "${title}".`;
       }
       case 'create_page': case 'update_page': {
@@ -365,7 +365,7 @@ export function createCourseTools({ userId, courseId }) {
         if (creating) {
           const id = await trx(k(), async (t) => insertId(t('course_pages'), { course_id: c.id, module_id: moduleId ?? null, position: await nextPosition(c.id, moduleId ?? null, t), title, layout, content_json: JSON.stringify(doc), config_json: JSON.stringify(config) }));
           await touchCourse();
-          audit(userId, 'course.page.create', String(c.id), { page: id, layout, via: 'course_design_chat' });
+          await audit(userId, 'course.page.create', String(c.id), { page: id, layout, via: 'course_design_chat' });
           return `Created page "${title}" (id ${id})${moduleId ? ` in module ${moduleId}` : ' at the top level'}.`;
         }
         if (moduleId !== undefined && (moduleId ?? null) !== p.module_id) {
@@ -376,7 +376,7 @@ export function createCourseTools({ userId, courseId }) {
         await k()('course_pages').where({ id: p.id }).update({ title, content_json: JSON.stringify(doc), config_json: JSON.stringify(config), updated_at: now() });
         if (layout === ASSESSMENT_LAYOUT) await k()('assessments').where({ page_id: p.id }).update({ title });
         await touchCourse();
-        audit(userId, 'course.page.update', String(c.id), { page: p.id, via: 'course_design_chat' });
+        await audit(userId, 'course.page.update', String(c.id), { page: p.id, via: 'course_design_chat' });
         return `Updated page "${title}" (id ${p.id}).`;
       }
       default: return `Error: unknown course tool ${name}.`;

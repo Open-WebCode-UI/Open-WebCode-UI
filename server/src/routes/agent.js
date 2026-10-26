@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
-import { getDb, getKnex } from '../db/index.js';
+import { getKnex } from '../db/index.js';
+import { insertId } from '../db/dialect.js';
 import { config } from '../config.js';
 import { defineRoutes, fail, validate, z } from '../http.js';
 import { getSettings } from '../settings.js';
@@ -33,7 +34,7 @@ const pending = new Map(); // approval / question id -> { resolve, userId, kind 
 
 export function sse(res) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-  return (ev) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
+  return async (ev) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
 }
 
 // Chat conversations belong to one of the chat page's tabs, each with its own permissions, prompt, and history.
@@ -41,15 +42,15 @@ export const CHAT_TYPES = ['general', 'coding', 'course'];
 const CHAT_USE = { general: 'chat.general.use', coding: 'chat.use', course: 'chat.course.use' };
 const CHAT_PROMPT = { general: ['general', 'prompt_general'], coding: ['chat', 'prompt_chat'], course: ['course', 'prompt_course'] };
 
-function getConversation(req, kind, projectId, id, title, chatType = null, courseId = null) {
-  const db = getDb();
+async function getConversation(req, kind, projectId, id, title, chatType = null, courseId = null) {
+  const k = getKnex();
   if (id) {
-    const c = db.prepare('SELECT * FROM conversations WHERE id=? AND user_id=? AND kind=?').get(id, req.user.id, kind);
+    const c = await k('conversations').where({ id, user_id: req.user.id, kind }).first();
     if (!c || (chatType && (c.chat_type || 'coding') !== chatType)) fail(404, 'conversation_not_found');
     return c;
   }
-  const cid = Number(db.prepare('INSERT INTO conversations (user_id, project_id, kind, title, chat_type, course_id) VALUES (?,?,?,?,?,?)').run(req.user.id, projectId ?? null, kind, title.slice(0, 80), chatType, courseId).lastInsertRowid);
-  return db.prepare('SELECT * FROM conversations WHERE id=?').get(cid);
+  const cid = await insertId(k('conversations'), { user_id: req.user.id, project_id: projectId ?? null, kind, title: title.slice(0, 80), chat_type: chatType, course_id: courseId });
+  return k('conversations').where({ id: cid }).first();
 }
 
 // Web search for this turn: the chat's own toggle (sent by the client, remembered on the conversation) must be on, and the tenant,
@@ -72,37 +73,40 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
     const kind = z.enum(['agent', 'chat']).parse(req.query.kind || 'agent');
     const chatType = req.query.chatType ? z.enum(CHAT_TYPES).parse(req.query.chatType) : null;
     const pid = req.query.projectId ? Number(req.query.projectId) : null;
-    const rows = getDb().prepare("SELECT id,title,created_at createdAt,updated_at updatedAt,model_id modelId, web_search webSearch, course_id courseId FROM conversations WHERE user_id=? AND kind=? AND project_id IS ? AND (? IS NULL OR COALESCE(chat_type,'coding')=?) ORDER BY id DESC LIMIT 50").all(req.user.id, kind, pid, chatType, chatType);
+    const k = getKnex();
+    const rows = await k('conversations').where({ user_id: req.user.id, kind }).modify((q) => { if (pid == null) q.whereNull('project_id'); else q.where('project_id', pid); })
+      .modify((q) => { if (chatType) q.whereRaw("COALESCE(chat_type, 'coding') = ?", [chatType]); }).orderBy('id', 'desc').limit(50)
+      .select({ id: 'id', title: 'title', createdAt: 'created_at', updatedAt: 'updated_at', modelId: 'model_id', webSearch: 'web_search', courseId: 'course_id' });
     const costs = await sessionCosts(rows.map((c) => c.id), req.permissions); // null unless the administrator turned cost display on for everyone or this user has spend.view; the token estimate follows the same switch
     res.json(costs ? await Promise.all(rows.map(async (c) => ({ ...c, tokens: estimateTokens(await loadMessages(c.id)), cost: costs.get(c.id) ?? 0 }))) : rows);
   });
   route.get('/conversations/:id/messages', 'authenticated', async (req, res) => {
-    const c = getDb().prepare('SELECT * FROM conversations WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+    const c = await getKnex()('conversations').where({ id: Number(req.params.id) || -1, user_id: req.user.id }).first();
     if (!c) fail(404, 'conversation_not_found');
     res.json((await loadMessages(c.id)).filter((m) => m.role !== 'tool').map((m) => ({ role: m.role, content: m.display ?? m.content, thinking: m.thinking, toolCalls: m.toolCalls, attachments: m.attachments?.map((a) => ({ id: a.id, name: a.name, kind: a.kind })) })));
   });
-  route.put('/conversations/:id', 'authenticated', (req, res) => {
+  route.put('/conversations/:id', 'authenticated', async (req, res) => {
     const { title } = validate(z.object({ title: z.string().trim().min(1).max(120) }), req.body);
-    const own = getDb().prepare("SELECT id FROM conversations WHERE id=? AND user_id=? AND kind='chat'").get(req.params.id, req.user.id);
+    const own = await getKnex()('conversations').where({ id: Number(req.params.id) || -1, user_id: req.user.id, kind: 'chat' }).first('id');
     if (!own) fail(404, 'conversation_not_found');
-    getDb().prepare('UPDATE conversations SET title=? WHERE id=?').run(title, own.id);
+    await getKnex()('conversations').where({ id: own.id }).update({ title });
     res.json({ ok: true, title });
   });
   route.delete('/conversations/:id', 'authenticated', async (req, res) => {
-    const own = getDb().prepare('SELECT id FROM conversations WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+    const own = await getKnex()('conversations').where({ id: Number(req.params.id) || -1, user_id: req.user.id }).first('id');
     if (own) await removeConversationFiles(own.id);
-    getDb().prepare('DELETE FROM conversations WHERE id=? AND user_id=?').run(req.params.id, req.user.id);
+    await getKnex()('conversations').where({ id: Number(req.params.id) || -1, user_id: req.user.id }).del();
     res.json({ ok: true });
   });
   // Delete several chats of one tab at once: the listed ids, or all of them. Only the caller's own chats are touched.
   route.post('/conversations/bulk-delete', 'authenticated', async (req, res) => {
     const b = validate(z.object({ chatType: z.enum(CHAT_TYPES), ids: z.array(z.number().int()).max(500).optional(), all: z.boolean().optional() }), req.body);
     if (!b.all && !b.ids?.length) fail(400, 'nothing_selected');
-    const db = getDb();
-    const rows = db.prepare("SELECT id FROM conversations WHERE user_id=? AND kind='chat' AND COALESCE(chat_type,'coding')=?").all(req.user.id, b.chatType).map((c) => c.id);
+    const k = getKnex();
+    const rows = (await k('conversations').where({ user_id: req.user.id, kind: 'chat' }).whereRaw("COALESCE(chat_type, 'coding') = ?", [b.chatType]).select('id')).map((c) => c.id);
     const ids = b.all ? rows : rows.filter((id) => b.ids.includes(id));
-    for (const id of ids) { await removeConversationFiles(id); db.prepare('DELETE FROM conversations WHERE id=?').run(id); }
-    audit(req.user.id, 'chat.bulk_delete', null, { chatType: b.chatType, count: ids.length });
+    for (const id of ids) { await removeConversationFiles(id); await k('conversations').where({ id }).del(); }
+    await audit(req.user.id, 'chat.bulk_delete', null, { chatType: b.chatType, count: ids.length });
     res.json({ ok: true, deleted: ids.length, deletedIds: ids });
   });
 
@@ -116,7 +120,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
   });
 
   // Answer to an approval request (shell command) or an ask_user question.
-  route.post('/agent/respond', 'agent.plan', (req, res) => {
+  route.post('/agent/respond', 'agent.plan', async (req, res) => {
     const b = validate(z.object({ id: z.string().max(100), value: z.union([z.boolean(), z.string().max(5000)]), message: z.string().max(1000).optional() }), req.body);
     const p = pending.get(b.id);
     if (!p || p.userId !== req.user.id) fail(404, 'not_found');
@@ -137,7 +141,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
     text = text.trim();
     if (!text) throw new Error('The model returned an empty summary.');
     const archived = await archiveAndRestart(conv.id, text);
-    audit(userId, 'session.compact', String(conv.id), { archived });
+    await audit(userId, 'session.compact', String(conv.id), { archived });
     emit({ type: 'compacted', summary: text, archived });
   }
 
@@ -149,28 +153,28 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         mode: z.enum(['plan', 'act']), modelId: z.number().int().optional(), approvedPlan: z.string().max(50000).optional(), thinking: z.boolean().optional(), effort: z.enum(EFFORT_LEVELS).optional(), webSearch: z.boolean().optional(), resume: z.boolean().optional(),
         attachments: z.array(z.string().max(64)).max(10).optional(),
       }), req.body);
-      let perms = userPermissions(req.user.id);
+      let perms = await userPermissions(req.user.id);
       // Mode is authorized server-side; a client can't spoof act mode.
-      if (b.mode === 'act' && !perms.has('agent.act')) { audit(req.user.id, 'agent.act_denied', null); fail(403, 'forbidden', { permission: 'agent.act' }); }
+      if (b.mode === 'act' && !perms.has('agent.act')) { await audit(req.user.id, 'agent.act_denied', null); fail(403, 'forbidden', { permission: 'agent.act' }); }
       if (!perms.has('provider.use')) fail(403, 'forbidden', { permission: 'provider.use' });
       const project = await getProject({ params: { id: b.projectId }, user: req.user });
       const general = getSettings('general');
       // A course exercise workspace carries the instructor's rules for this attempt. They only narrow what the learner's role allows.
       const scope = await scopeOf(project.id);
       if (scope) {
-        const deny = (status, code, why) => { audit(req.user.id, 'exercise.policy_denied', String(project.id), { why }); fail(status, code, { reason: why }); };
+        const deny = async (status, code, why) => { await audit(req.user.id, 'exercise.policy_denied', String(project.id), { why }); fail(status, code, { reason: why }); };
         perms = effectivePermissions(perms, scope);
-        if (scope.locked) deny(403, 'exercise_policy', scope.submitted ? 'submitted' : 'time_limit');
-        if (b.mode === 'act' && !perms.has('agent.act')) deny(403, 'exercise_policy', 'mode');
+        if (scope.locked) await deny(403, 'exercise_policy', scope.submitted ? 'submitted' : 'time_limit');
+        if (b.mode === 'act' && !perms.has('agent.act')) await deny(403, 'exercise_policy', 'mode');
         // "Plan first": an Act turn needs a plan this session's agent proposed (stored server-side), or must continue an Act turn that had one.
         if (b.mode === 'act' && scope.policy.requirePlan) {
-          const c0 = b.conversationId ? getDb().prepare("SELECT plan, mode FROM conversations WHERE id=? AND user_id=? AND project_id=? AND kind='agent'").get(b.conversationId, req.user.id, project.id) : null;
-          if (!(c0 && (c0.plan || (b.resume && c0.mode === 'act')))) deny(403, 'plan_required', 'plan_required');
+          const c0 = b.conversationId ? await getKnex()('conversations').where({ id: b.conversationId, user_id: req.user.id, project_id: project.id, kind: 'agent' }).first('plan', 'mode') : null;
+          if (!(c0 && (c0.plan || (b.resume && c0.mode === 'act')))) await deny(403, 'plan_required', 'plan_required');
         }
         if (!STATUS_RE.test(b.message.trim()) && !COMMAND_RE.test(b.message.trim())) {
           const used = await usageOf(project.id);
-          if (scope.policy.maxMessages && used.messages >= scope.policy.maxMessages) deny(429, 'exercise_message_limit', 'messages');
-          if (scope.policy.maxCost && used.cost >= scope.policy.maxCost) deny(429, 'exercise_budget_exceeded', 'cost');
+          if (scope.policy.maxMessages && used.messages >= scope.policy.maxMessages) await deny(429, 'exercise_message_limit', 'messages');
+          if (scope.policy.maxCost && used.cost >= scope.policy.maxCost) await deny(429, 'exercise_budget_exceeded', 'cost');
         }
       }
       const rm = await resolveModel(req.user, effectiveCourseModelId(scope?.policy.modelId) ?? b.modelId ?? general.defaultModels[b.mode]);
@@ -185,7 +189,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       const att = COMMAND_RE.test(b.message.trim()) ? { refs: [], inline: '' } : await prepareForMessage(req.user.id, b.attachments, { caps: uploadCaps(rm), providerType: rm.provider.type });
       // Another session in this project may already be running: the user was warned, and the same session is still guarded by session_busy below.
 
-      conv = getConversation(req, 'agent', project.id, b.conversationId, b.message);
+      conv = await getConversation(req, 'agent', project.id, b.conversationId, b.message);
       // Resuming right after Stop: the stopped turn may still be saving its messages, so give it a moment to finish.
       if (b.resume) for (let n = 0; n < 30 && activeConversations.has(conv.id); n++) await new Promise((r) => setTimeout(r, 100));
       if (activeConversations.has(conv.id)) fail(409, 'session_busy');
@@ -218,11 +222,11 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       // The context-size report goes out just before `done`, so `done` stays the last event of a turn.
       const sendContext = () => { if (contextSent) return; contextSent = true; emit({ type: 'context', ...contextInfo(estimateTokens(messages, system.length), limit) }); };
       const turnEmit = (ev) => { if (ev.type === 'done') sendContext(); emit(ev); };
-      const ask = (kind, payload) => new Promise((resolve) => {
+      const ask = (kind, payload) => new Promise(async (resolve) => {
         const id = randomToken(12);
         pending.set(id, { resolve, userId: req.user.id, kind });
         emit({ type: kind, id, ...payload });
-        abort.signal.addEventListener('abort', () => { pending.delete(id); resolve(kind === 'approval' ? false : ''); });
+        abort.signal.addEventListener('abort', async () => { pending.delete(id); resolve(kind === 'approval' ? false : ''); });
       });
       try {
         emit({ type: 'start', conversationId: conv.id, mode: b.mode });
@@ -233,7 +237,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         if (command) {
           const name = command[1].toLowerCase();
           if (!messages.length) emit({ type: 'notice', text: name === 'compact' ? 'There is nothing to compact yet.' : 'The session is already empty.' });
-          else if (name === 'clear') { const archived = await archiveAndRestart(conv.id, null); audit(req.user.id, 'session.clear', String(conv.id), { archived }); emit({ type: 'cleared', archived }); }
+          else if (name === 'clear') { const archived = await archiveAndRestart(conv.id, null); await audit(req.user.id, 'session.clear', String(conv.id), { archived }); emit({ type: 'cleared', archived }); }
           else await compactSession({ adapter, rm, conv, messages, skill: compactSkill, focus: (command[2] || '').trim(), signal: abort.signal, emit, userId: req.user.id });
           emit({ type: 'context', ...contextInfo(estimateTokens(await loadMessages(conv.id), system.length), limit) }); // what the model will see next time
           emit({ type: 'done' });
@@ -250,12 +254,12 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
           coord: coordination.forTurn(project.id, conv.id),
           // Media from tools: kept (and shown to the model) only when this model accepts images; the agent can always read a file back to save it.
           attachments: {
-            saveOutput: (m, name) => saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: general.maxAttachmentMb * 1024 * 1024 }),
-            ...(uploadCaps(rm).images ? { save: (m, name) => saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: general.maxAttachmentMb * 1024 * 1024 }) } : {}),
+            saveOutput: async (m, name) => await saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: general.maxAttachmentMb * 1024 * 1024 }),
+            ...(uploadCaps(rm).images ? { save: async (m, name) => await saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: general.maxAttachmentMb * 1024 * 1024 }) } : {}),
             read: async (id) => { const a = await getOwned(req.user.id, id), data = a && readBytes(req.user.id, id); return data ? { name: a.name, mime: a.mime, kind: a.kind, data } : null; },
           },
           mcp, signal: abort.signal, memory: memoryContext(req.user.id, project.id, memScopes, (m) => emit({ type: 'memory_saved', ...m })),
-          subagents: !!rm.model.subagents && !scope?.toolDeny.has('spawn_agent'), toolDeny: scope?.toolDeny, protectedGlobs: scope?.policy.protectedFiles, webSearch: ws.ctx, onSearch: (query) => audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }),
+          subagents: !!rm.model.subagents && !scope?.toolDeny.has('spawn_agent'), toolDeny: scope?.toolDeny, protectedGlobs: scope?.policy.protectedFiles, webSearch: ws.ctx, onSearch: async (query) => await audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }),
           exec: (cmd) => (deps.terminals || terminals).agentRun({ userId: req.user.id, projectId: project.id, cwd: fs.realpathSync(project.dir), command: cmd, timeoutSec: general.shellTimeoutSec, outputCap: general.shellOutputCapBytes }),
           askUser: (question, opts = {}) => ask('question', { question, ...opts }),
           onChange: (path) => emit({ type: 'file_changed', path }),
@@ -265,11 +269,11 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
           skills, onSkill: (name) => emit({ type: 'skill', name }),
           onConclude: (c) => emit({ type: 'conclusion', ...c }),
           onModeRequest: (m) => emit({ type: 'mode_request', ...m }),
-          onModeChange: (m) => { audit(req.user.id, 'agent.mode_reverted', m.to, { reason: m.reason }); emit({ type: 'mode_changed', ...m }); },
+          onModeChange: async (m) => { await audit(req.user.id, 'agent.mode_reverted', m.to, { reason: m.reason }); emit({ type: 'mode_changed', ...m }); },
           onViolation: () => {},
         };
-        const turnOpts = { adapter, model: rm.model.model_id, system, emit: turnEmit, signal: abort.signal, maxIterations: Math.min(general.maxAgentIterations, scope?.policy.maxSteps ?? Infinity), maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking), audit: (a, t, d) => audit(req.user.id, a, t, d), prepare: hydrator(req.user.id),
-          onUsage: (u) => recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'agent', ...u }) };
+        const turnOpts = { adapter, model: rm.model.model_id, system, emit: turnEmit, signal: abort.signal, maxIterations: Math.min(general.maxAgentIterations, scope?.policy.maxSteps ?? Infinity), maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking), audit: async (a, t, d) => await audit(req.user.id, a, t, d), prepare: hydrator(req.user.id),
+          onUsage: async (u) => await recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'agent', ...u }) };
         ctx.spawnSubagent = createSubagentRuntime({ ctx, permissions: perms, effort: b.effort, ...turnOpts });
         await runAgentTurn({ ...turnOpts, messages, ctx });
       } catch (e) {
@@ -289,7 +293,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
   route.post('/chat/turn', 'authenticated', async (req, res, next) => {
     try {
       const b = validate(z.object({ chatType: z.enum(CHAT_TYPES).default('coding'), courseId: z.number().int().optional(), conversationId: z.number().int().optional(), message: z.string().min(1).max(50000), modelId: z.number().int().optional(), thinking: z.boolean().optional(), effort: z.enum(EFFORT_LEVELS).optional(), webSearch: z.boolean().optional(), attachments: z.array(z.string().max(64)).max(10).optional() }), req.body);
-      const allPerms = userPermissions(req.user.id), type = b.chatType;
+      const allPerms = await userPermissions(req.user.id), type = b.chatType;
       if (!allPerms.has(CHAT_USE[type])) fail(403, 'forbidden', { permission: CHAT_USE[type] });
       if (!allPerms.has('provider.use')) fail(403, 'forbidden', { permission: 'provider.use' });
       // Each tab has its own switches for web search and memory, on top of the general permissions for them.
@@ -299,7 +303,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       let courseId = null;
       if (type === 'course') {
         if (!allPerms.has('course.author')) fail(403, 'forbidden', { permission: 'course.author' });
-        const prior = b.conversationId ? getDb().prepare("SELECT course_id FROM conversations WHERE id=? AND user_id=? AND kind='chat' AND chat_type='course'").get(b.conversationId, req.user.id) : null;
+        const prior = b.conversationId ? await getKnex()('conversations').where({ id: b.conversationId, user_id: req.user.id, kind: 'chat', chat_type: 'course' }).first('course_id') : null;
         courseId = prior ? prior.course_id : b.courseId ?? null;
         if (!courseId) fail(400, 'course_required');
         if (!(await designableCourses(req.user.id, { all: allPerms.has('course.admin') })).some((c) => c.id === courseId)) fail(404, 'course_not_found');
@@ -313,7 +317,7 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
       }
       if (!rm) fail(400, 'no_model_available');
       const att = await prepareForMessage(req.user.id, b.attachments, { caps: uploadCaps(rm), providerType: rm.provider.type });
-      const conv = getConversation(req, 'chat', null, b.conversationId, b.message, type, courseId);
+      const conv = await getConversation(req, 'chat', null, b.conversationId, b.message, type, courseId);
       const messages = await loadMessages(conv.id), start = messages.length;
       const inv = await expandSkillInvocation(req.user.id, b.message, 'chat');
       const um = inv ? { role: 'user', content: inv.content, display: inv.display } : { role: 'user', content: b.message };
@@ -329,8 +333,8 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
         if (ws.notice) emit({ type: 'notice', text: ws.notice });
         await runAgentTurn({
           adapter: adapterFactory(rm.provider), model: rm.model.model_id, system: systemPromptFor(CHAT_PROMPT[type][0], req.user[CHAT_PROMPT[type][1]], { effort: b.effort, personaName: getSettings('branding').personaName, memory: await memoryPrompt(memScopes, req.user.id, null, { canSave: true }) + (ws.ctx ? WEB_SEARCH_PROMPT : '') + (courseTools ? await courseDesignContext(courseId) : '') }), messages, prepare: hydrator(req.user.id),
-          ctx: { agentMode: 'chat', execMode: 'files_only', permissions: new Set(), userId: req.user.id, attachments: { saveOutput: (m, name) => saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: getSettings('general').maxAttachmentMb * 1024 * 1024 }) }, webSearch: ws.ctx, courseDesign: courseTools, memory: memoryContext(req.user.id, null, memScopes, (m) => emit({ type: 'memory_saved', ...m })), onSearch: (query) => audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }) }, emit, signal: abort.signal, maxIterations: courseTools ? 20 : ws.ctx || memScopes.length ? 6 : 1, maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking),
-          onUsage: (u) => recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'chat', ...u }),
+          ctx: { agentMode: 'chat', execMode: 'files_only', permissions: new Set(), userId: req.user.id, attachments: { saveOutput: async (m, name) => await saveGenerated(req.user.id, conv.id, name, m.data, { maxBytes: getSettings('general').maxAttachmentMb * 1024 * 1024 }) }, webSearch: ws.ctx, courseDesign: courseTools, memory: memoryContext(req.user.id, null, memScopes, (m) => emit({ type: 'memory_saved', ...m })), onSearch: async (query) => await audit(req.user.id, 'websearch.query', String(conv.id), { chars: query.length }) }, emit, signal: abort.signal, maxIterations: courseTools ? 20 : ws.ctx || memScopes.length ? 6 : 1, maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, b.thinking),
+          onUsage: async (u) => await recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'chat', ...u }),
         });
       } catch (e) { emit({ type: 'error', message: e?.userMessage ? String(e.message).slice(0, 300) : 'The model request failed.' }); console.error('chat error', e?.message); }
       finally { await persistFrom(conv.id, messages, start); await touch(conv.id, { modelId: rm.model.id }); res.end(); }
@@ -341,17 +345,17 @@ export function agentRouter({ adapterFactory = createAdapter, deps = {} } = {}) 
   // Each prompt belongs to a mode/tab; a user only sees and edits the prompts for what their role can use.
   const PROMPT_ACCESS = { plan: 'agent.plan', act: 'agent.act', chat: 'chat.use', general: 'chat.general.use', course: 'chat.course.use' };
   const promptKinds = (perms) => Object.keys(PROMPT_ACCESS).filter((k) => perms.has(PROMPT_ACCESS[k]));
-  route.get('/profile/prompts', 'authenticated', (req, res) => {
-    const u = req.user, kinds = promptKinds(userPermissions(u.id));
+  route.get('/profile/prompts', 'authenticated', async (req, res) => {
+    const u = req.user, kinds = promptKinds(await userPermissions(u.id));
     const own = { plan: u.prompt_plan || '', act: u.prompt_act || '', chat: u.prompt_chat || '', general: u.prompt_general || '', course: u.prompt_course || '' };
     res.json({ kinds, defaults: Object.fromEntries(kinds.map((k) => [k, DEFAULTS[k]])), overrides: Object.fromEntries(kinds.map((k) => [k, own[k]])) });
   });
-  route.put('/profile/prompts', 'profile.prompt.edit', (req, res) => {
+  route.put('/profile/prompts', 'profile.prompt.edit', async (req, res) => {
     const b = validate(z.object({ plan: z.string().max(20000).nullable().optional(), act: z.string().max(20000).nullable().optional(), chat: z.string().max(20000).nullable().optional(), general: z.string().max(20000).nullable().optional(), course: z.string().max(20000).nullable().optional() }), req.body);
-    const db = getDb(), kinds = promptKinds(req.permissions);
+    const kinds = promptKinds(req.permissions);
     for (const k of Object.keys(b)) if (b[k] !== undefined && !kinds.includes(k)) fail(403, 'forbidden', { permission: PROMPT_ACCESS[k] });
-    for (const k of kinds) if (b[k] !== undefined) db.prepare(`UPDATE users SET prompt_${k}=? WHERE id=?`).run(b[k] && b[k].trim() ? b[k] : null, req.user.id);
-    audit(req.user.id, 'profile.prompts.update', null, { fields: Object.keys(b) });
+    for (const kind of kinds) if (b[kind] !== undefined) await getKnex()('users').where({ id: req.user.id }).update({ [`prompt_${kind}`]: b[kind] && b[kind].trim() ? b[kind] : null });
+    await audit(req.user.id, 'profile.prompts.update', null, { fields: Object.keys(b) });
     res.json({ ok: true });
   });
   return r;

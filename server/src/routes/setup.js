@@ -39,15 +39,15 @@ export function setupRouter() {
     if (getSettings('setup').completed) return res.json(await state()); // a second administrator's late submit must not overwrite the first's choices
     if (b.choices) {
       const c = b.choices;
-      saveSettings('general', { ...getSettings('general'), appName: c.appName, tagline: c.tagline, memoryAllowed: c.memoryAllowed,
+      await saveSettings('general', { ...getSettings('general'), appName: c.appName, tagline: c.tagline, memoryAllowed: c.memoryAllowed,
         coursesEnabled: c.coursesEnabled, userMcpAllowed: c.userMcpAllowed, showSessionCost: c.showSessionCost });
       if (req.permissions.has('branding.write')) {
         const br = getSettings('branding');
-        saveSettings('branding', { ...br, primaryColor: c.primaryColor ?? br.primaryColor, defaultMode: c.defaultMode ?? br.defaultMode });
+        await saveSettings('branding', { ...br, primaryColor: c.primaryColor ?? br.primaryColor, defaultMode: c.defaultMode ?? br.defaultMode });
       }
     }
-    saveSettings('setup', { completed: true, skipped: !!b.skip, completedBy: req.user.id });
-    audit(req.user.id, b.skip ? 'setup.skip' : 'setup.complete', null, b.choices ? { ...b.choices } : {});
+    await saveSettings('setup', { completed: true, skipped: !!b.skip, completedBy: req.user.id });
+    await audit(req.user.id, b.skip ? 'setup.skip' : 'setup.complete', null, b.choices ? { ...b.choices } : {});
     res.json(await state());
   });
   return r;

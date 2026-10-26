@@ -2,11 +2,12 @@ import { config } from './config.js';
 import { initDb } from './db/index.js';
 import { createApp, bootstrap } from './app.js';
 import { resolveTls, createServer, tlsManagement, setTlsRuntime, effectiveBaseUrl } from './tls.js';
-import { getSettings } from './settings.js';
+import { getSettings, startSettingsRefresh } from './settings.js';
 import { attachTerminalWs } from './terminal/ws.js';
 
-initDb(config.dbFile);
-const generated = bootstrap();
+await initDb();
+startSettingsRefresh();
+const generated = await bootstrap();
 if (generated) {
   console.log('\n================ BREAK-GLASS ACCOUNT ================');
   console.log(`  username: breakglass\n  password: ${generated}\n  (shown once; you must change it and enroll MFA at first login)`);
@@ -27,7 +28,7 @@ if (managedBy === 'admin') {
   config.plainHttp = !tls;
 }
 setTlsRuntime({ https: !!tls, source: tls?.source ?? null, managedBy, cert: tls?.cert ?? null });
-const server = createServer(createApp(), tls);
+const server = await createServer(createApp(), tls);
 attachTerminalWs(server);
 server.listen(config.port, () => {
   console.log(`Listening on ${config.baseUrl} (port ${config.port}, ${tls ? `HTTPS, ${tls.source} certificate` : 'HTTP'})`);

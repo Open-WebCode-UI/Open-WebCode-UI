@@ -1,3 +1,4 @@
+import { sqlDb } from './db-sql.js';
 import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
@@ -7,11 +8,11 @@ import AdmZip from 'adm-zip';
 import { simpleGit } from 'simple-git';
 import { freshDb, createApp, login, request, tmpDir, makeRole } from './helpers.js';
 import { saveSettings, getSettings } from '../src/settings.js';
-import { getDb } from '../src/db/index.js';
+
 
 let app, u;
-const dirOf = (id) => getDb().prepare('SELECT dir FROM projects WHERE id=?').get(id).dir;
-beforeEach(() => { freshDb(); app = createApp(); u = login(app, { username: 'projuser' }); });
+const dirOf = async (id) => (await sqlDb().prepare('SELECT dir FROM projects WHERE id=?').get(id)).dir;
+beforeEach(async () => { await freshDb(); app = createApp(); u = await login(app, { username: 'projuser' }); });
 // Hand-built "stored" zip so hostile entry names (../, absolute) survive; AdmZip.addFile would sanitize them.
 const zipB64 = (entries) => {
   const locals = [], centrals = []; let offset = 0;
@@ -43,7 +44,7 @@ describe('projects & files', () => {
       expect((await u.put(`/api/projects/${p.id}/file`).send({ path: bad, content: 'x' })).status).toBe(400);
     }
     const out = tmpDir('outside-'); fs.writeFileSync(path.join(out, 's.txt'), 'secret');
-    fs.symlinkSync(out, path.join(dirOf(p.id), 'esc'));
+    fs.symlinkSync(out, path.join(await dirOf(p.id), 'esc'));
     expect((await u.get(`/api/projects/${p.id}/file?path=esc/s.txt`)).status).toBe(400);
     expect((await u.post('/api/projects').send({ name: '../evil' })).status).toBe(400);
     expect((await u.post('/api/projects').send({ name: 'jailed' })).status).toBe(409);
@@ -51,13 +52,13 @@ describe('projects & files', () => {
   it('imports a zip, and rejects zip-slip, absolute entries, and oversized archives', async () => {
     const ok = await u.post('/api/projects/import').send({ name: 'imp', zipBase64: zipB64([['a/b.txt', 'hello'], ['README.md', '# hi']]) });
     expect(ok.status).toBe(201);
-    expect(fs.readFileSync(path.join(dirOf(ok.body.id), 'a/b.txt'), 'utf8')).toBe('hello');
+    expect(fs.readFileSync(path.join(await dirOf(ok.body.id), 'a/b.txt'), 'utf8')).toBe('hello');
     const slip = await u.post('/api/projects/import').send({ name: 'slip', zipBase64: zipB64([['../../escape.txt', 'x']]) });
     expect(slip.status).toBe(400); expect(slip.body.error).toBe('zip_slip');
     expect(fs.existsSync(path.join(config().dataDir, 'escape.txt'))).toBe(false);
     expect((await u.post('/api/projects/import').send({ name: 'abs', zipBase64: zipB64([['/tmp/abs-evil.txt', 'x']]) })).status).toBe(400);
     expect(fs.existsSync('/tmp/abs-evil.txt')).toBe(false);
-    expect(getDb().prepare('SELECT COUNT(*) c FROM projects').get().c).toBe(1); // failed imports leave nothing behind
+    expect((await sqlDb().prepare('SELECT COUNT(*) c FROM projects').get()).c).toBe(1); // failed imports leave nothing behind
     expect(fs.existsSync(path.join(config().dataDir, 'workspaces', String(u.id), 'slip'))).toBe(false);
   });
   it('accepts zip imports above 1 MB up to the admin-set max upload size', async () => {
@@ -65,7 +66,7 @@ describe('projects & files', () => {
     expect(Buffer.from(big, 'base64').length).toBeGreaterThan(1024 * 1024);
     const ok = await u.post('/api/projects/import').send({ name: 'bigzip', zipBase64: big });
     expect(ok.status).toBe(201);
-    saveSettings('general', { ...getSettings('general'), maxUploadMb: 1 });
+    await saveSettings('general', { ...getSettings('general'), maxUploadMb: 1 });
     const no = await u.post('/api/projects/import').send({ name: 'bigzip2', zipBase64: big });
     expect(no.status).toBe(413);
   });
@@ -79,8 +80,8 @@ describe('projects & files', () => {
     expect(names).toContain('a.txt'); expect(names.some((n) => n.includes('node_modules'))).toBe(false);
   });
   it('download requires download.code', async () => {
-    makeRole('nodl', ['project.read', 'project.write']);
-    const n = login(app, { username: 'nodluser', roles: ['nodl'] });
+    await makeRole('nodl', ['project.read', 'project.write']);
+    const n = await login(app, { username: 'nodluser', roles: ['nodl'] });
     const p = (await n.post('/api/projects').send({ name: 'x1' })).body;
     expect((await n.get(`/api/projects/${p.id}/download`)).status).toBe(403);
   });
@@ -90,7 +91,7 @@ describe('projects & files', () => {
     expect((await u.get(`/api/projects/${p.id}/git/status`)).body.initialized).toBe(false);
     const c = await u.post(`/api/projects/${p.id}/git/commit`).send({ message: 'first' });
     expect(c.status).toBe(200);
-    const log = await simpleGit(dirOf(p.id)).log();
+    const log = await simpleGit(await dirOf(p.id)).log();
     expect(log.latest.message).toBe('first'); expect(log.latest.author_name).toBe('projuser');
     await u.put(`/api/projects/${p.id}/file`).send({ path: 'b.txt', content: '2' });
     expect((await u.get(`/api/projects/${p.id}/git/status`)).body.files[0].path).toBe('b.txt');
@@ -103,7 +104,7 @@ describe('projects & files', () => {
   });
   it('deleting a project removes files and checkpoints', async () => {
     const p = (await u.post('/api/projects').send({ name: 'todel' })).body;
-    const d = dirOf(p.id);
+    const d = await dirOf(p.id);
     await u.post(`/api/projects/${p.id}/checkpoints`).send({ label: 'x' });
     expect((await u.del(`/api/projects/${p.id}`)).status).toBe(200);
     expect(fs.existsSync(d)).toBe(false);

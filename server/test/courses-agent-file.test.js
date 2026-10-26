@@ -7,13 +7,13 @@ const turn = (u, body, pid = page.id) => u.post(`/api/courses/${course.id}/pages
 const fileUrl = () => `/api/courses/${course.id}/pages/${page.id}/file`;
 
 beforeEach(async () => {
-  freshDb(); const mid = addProvider();
-  saveSettings('general', { ...getSettings('general'), defaultModels: { plan: null, act: null, chat: mid } });
+  await freshDb(); const mid = await addProvider();
+  await saveSettings('general', { ...getSettings('general'), defaultModels: { plan: null, act: null, chat: mid } });
   seen = [];
   script = [[{ type: 'text', text: 'Done.' }]];
   app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } });
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['developer'] });
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['developer'] });
   course = (await inst.post('/api/courses').send({ title: 'Python' })).body;
   await inst.put(`/api/courses/${course.id}`).send({ title: 'Python', status: 'published' });
   page = (await inst.post(`/api/courses/${course.id}/pages`).send({ title: 'Loops', layout: 'agent_file', config: { fileName: 'loops.py', fileContent: 'for i in range(3):\n    print(i)\n' } })).body;

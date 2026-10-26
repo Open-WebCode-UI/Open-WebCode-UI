@@ -1,3 +1,4 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import WebSocket from 'ws';
@@ -5,7 +6,7 @@ import { TerminalManager, clean } from '../src/terminal/manager.js';
 import { attachTerminalWs } from '../src/terminal/ws.js';
 import { freshDb, createApp, login, makeRole, tmpDir, addProvider, fakeAdapterFactory } from './helpers.js';
 import { saveSettings, getSettings } from '../src/settings.js';
-import { getDb } from '../src/db/index.js';
+
 import { revokeUserSessions } from '../src/auth/session.js';
 
 const SHELL = () => saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
@@ -95,9 +96,9 @@ describe('session manager', () => {
 describe('terminal REST API', () => {
   let app, dev, shellUser, project;
   beforeEach(async () => {
-    freshDb(); app = createApp({ deps: { terminals: mgr } });
-    makeRole('shellers', ['project.read', 'project.write', 'files.read', 'files.write', 'terminal.use', 'agent.shell.run', 'agent.plan', 'agent.act']);
-    dev = login(app, { username: 'devperson' }); shellUser = login(app, { username: 'shelluser', roles: ['shellers'] });
+    await freshDb(); app = createApp({ deps: { terminals: mgr } });
+    await makeRole('shellers', ['project.read', 'project.write', 'files.read', 'files.write', 'terminal.use', 'agent.shell.run', 'agent.plan', 'agent.act']);
+    dev = await login(app, { username: 'devperson' }); shellUser = await login(app, { username: 'shelluser', roles: ['shellers'] });
     project = (await shellUser.post('/api/projects').send({ name: 'term1' })).body;
   });
   it('is unavailable until the administrator enables shell mode', async () => {
@@ -110,7 +111,7 @@ describe('terminal REST API', () => {
     expect((await dev.get(`/api/terminal/status?projectId=${p.id}`)).body).toMatchObject({ enabled: true, canUse: false, canView: false });
   });
   it('requires recent re-verification (step-up) to open a shell', async () => {
-    SHELL(); const stale = login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const p = (await stale.post('/api/projects').send({ name: 'sp' })).body;
+    SHELL(); const stale = await login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const p = (await stale.post('/api/projects').send({ name: 'sp' })).body;
     const r = await stale.post('/api/terminal/sessions').send({ projectId: p.id }); expect(r.status).toBe(403); expect(r.body.error).toBe('mfa_required');
   });
   it('opens (once per project), reports status, and can only be closed by its owner', async () => {
@@ -118,17 +119,17 @@ describe('terminal REST API', () => {
     const a = await shellUser.post('/api/terminal/sessions').send({ projectId: project.id }); expect(a.status).toBe(201); expect(a.body.id).toMatch(/^[0-9a-f]{32}$/);
     expect((await shellUser.post('/api/terminal/sessions').send({ projectId: project.id })).body.id).toBe(a.body.id);
     expect((await shellUser.get(`/api/terminal/status?projectId=${project.id}`)).body).toMatchObject({ enabled: true, canUse: true, userSession: a.body.id });
-    const other = login(app, { username: 'other1', roles: ['shellers'] });
+    const other = await login(app, { username: 'other1', roles: ['shellers'] });
     expect((await other.del(`/api/terminal/sessions/${a.body.id}`)).status).toBe(404);
     expect((await shellUser.del(`/api/terminal/sessions/${a.body.id}`)).status).toBe(200); expect(mgr.get(a.body.id)).toBeNull();
-    expect(getDb().prepare("SELECT COUNT(*) c FROM audit WHERE action IN ('terminal.open','terminal.close')").get().c).toBe(2);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action IN ('terminal.open','terminal.close')").get()).c).toBe(2);
   });
   it('cannot open a shell in someone else\'s project', async () => {
-    SHELL(); const other = login(app, { username: 'other2', roles: ['shellers'] });
+    SHELL(); const other = await login(app, { username: 'other2', roles: ['shellers'] });
     expect((await other.post('/api/terminal/sessions').send({ projectId: project.id })).status).toBe(404);
   });
   it('switching shell mode off ends every live shell', async () => {
-    SHELL(); const admin = login(app, { username: 'rootadmin', roles: ['administrator'] });
+    SHELL(); const admin = await login(app, { username: 'rootadmin', roles: ['administrator'] });
     const a = (await shellUser.post('/api/terminal/sessions').send({ projectId: project.id })).body.id;
     expect(mgr.get(a)).not.toBeNull();
     // terminals singleton is the one admin routes use; here we assert the manager-level behavior plus the route's audit
@@ -146,9 +147,9 @@ describe('terminal WebSocket', () => {
   });
   const text = (c) => c.msgs.filter((m) => m.type === 'output').map((m) => m.data).join('');
   beforeEach(async () => {
-    freshDb(); SHELL(); app = createApp({ deps: { terminals: mgr } });
-    makeRole('shellers', ['project.read', 'project.write', 'files.read', 'terminal.use', 'agent.shell.run', 'agent.plan']);
-    user = login(app, { username: 'wsuser1', roles: ['shellers'] }); other = login(app, { username: 'wsother', roles: ['shellers'] });
+    await freshDb(); SHELL(); app = createApp({ deps: { terminals: mgr } });
+    await makeRole('shellers', ['project.read', 'project.write', 'files.read', 'terminal.use', 'agent.shell.run', 'agent.plan']);
+    user = await login(app, { username: 'wsuser1', roles: ['shellers'] }); other = await login(app, { username: 'wsother', roles: ['shellers'] });
     project = (await user.post('/api/projects').send({ name: 'ws1' })).body;
     server = http.createServer(app); attachTerminalWs(server, { manager: mgr, sweepMs: 100 }); await new Promise((r) => server.listen(0, r)); port = server.address().port;
     term = (await user.post('/api/terminal/sessions').send({ projectId: project.id })).body.id;
@@ -174,7 +175,7 @@ describe('terminal WebSocket', () => {
     expect(noOrigin).toBe(403);
   });
   it('requires the terminal.use permission at connect time', async () => {
-    const dev = login(app, { username: 'nopower' }); expect((await connect(term, { cookie: dev.cookie })).status).toBe(404);
+    const dev = await login(app, { username: 'nopower' }); expect((await connect(term, { cookie: dev.cookie })).status).toBe(404);
   });
   it('the agent\'s shell can be watched live but not typed into', async () => {
     await mgr.agentRun({ userId: user.id, projectId: project.id, cwd: tmpDir('ws-'), command: 'echo agent-ran-this' });
@@ -190,7 +191,7 @@ describe('terminal WebSocket', () => {
     b.ws.send(JSON.stringify({ type: 'input', data: 'exit\n' })); await sleep(700); expect(b.msgs.some((m) => m.type === 'exit')).toBe(true); expect(b.ws.readyState).toBeGreaterThanOrEqual(2);
   });
   it('ends the connection when the administrator turns shell mode off', async () => {
-    const c = await connect(term); await sleep(100); saveSettings('general', { ...getSettings('general'), execMode: 'files_only' }); await sleep(400);
+    const c = await connect(term); await sleep(100); await saveSettings('general', { ...getSettings('general'), execMode: 'files_only' }); await sleep(400);
     expect(c.ws.readyState).toBeGreaterThanOrEqual(2); expect(c.msgs.some((m) => m.type === 'closed')).toBe(true); expect(mgr.get(term)).toBeNull();
   });
   it('ends the connection and the shell when the login session is revoked', async () => {

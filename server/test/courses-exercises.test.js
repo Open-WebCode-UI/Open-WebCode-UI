@@ -1,8 +1,9 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { freshDb, createApp, login, makeRole } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { config } from '../src/config.js';
 import { runChecks } from '../src/courses/exercises.js';
 
@@ -25,20 +26,20 @@ const exercise = (s = spec()) => ({ type: 'exercise', prompt: 'Agentic exercise'
 async function setup(s) { const q = (await inst.post(`${A()}/${quiz.id}/questions`).send(exercise(s))).body; return q; }
 const start = async (u = stu) => (await u.post(`${A()}/${quiz.id}/attempts`)).body;
 const submit = (u, att) => u.post(`/api/courses/${course.id}/attempts/${att.id}/submit`).send({ answers: {} });
-const projectDir = (id) => getDb().prepare('SELECT dir FROM projects WHERE id=?').get(id).dir;
+const projectDir = async (id) => (await sqlDb().prepare('SELECT dir FROM projects WHERE id=?').get(id)).dir;
 // What the learner's agent session would leave behind: a conversation in the workspace project.
-function fakeSession(projectId, userId, { prompt, tools = [] }) {
-  const db = getDb();
-  const cid = Number(db.prepare("INSERT INTO conversations (user_id, project_id, kind, title) VALUES (?,?,'agent','s')").run(userId, projectId).lastInsertRowid);
+async function fakeSession(projectId, userId, { prompt, tools = [] }) {
+  const db = sqlDb();
+  const cid = Number((await db.prepare("INSERT INTO conversations (user_id, project_id, kind, title) VALUES (?,?,'agent','s')").run(userId, projectId)).lastInsertRowid);
   const ins = db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)');
   ins.run(cid, 'user', JSON.stringify({ role: 'user', content: prompt }));
   ins.run(cid, 'assistant', JSON.stringify({ role: 'assistant', content: 'Here is the plan.', toolCalls: tools.map((name, i) => ({ id: `t${i}`, name, args: { path: 'notes.md' } })) }));
 }
 
 beforeEach(async () => {
-  freshDb(); app = createApp();
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['developer'] });
+  await freshDb(); app = createApp();
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['developer'] });
   course = (await inst.post('/api/courses').send({ title: 'Agentic' })).body;
   await inst.put(`/api/courses/${course.id}`).send({ title: 'Agentic', status: 'published' });
   await inst.post(`/api/courses/${course.id}/enrollments`).send({ type: 'user', id: stu.id });
@@ -74,14 +75,14 @@ describe('an exercise attempt', () => {
     const q = await setup();
     const att = await start();
     const pid = att.questions[0].exercise.workspace.projectId;
-    expect(fs.readFileSync(path.join(projectDir(pid), 'README.md'), 'utf8')).toBe('# Starter\n');
+    expect(fs.readFileSync(path.join(await projectDir(pid), 'README.md'), 'utf8')).toBe('# Starter\n');
     expect((await stu.get('/api/projects')).body.map((p) => p.id)).toContain(pid); // the learner opens it like any project
     expect((await start()).id).toBe(att.id); // resuming does not create another workspace
-    expect(getDb().prepare('SELECT COUNT(*) n FROM exercise_workspaces').get().n).toBe(1);
+    expect((await sqlDb().prepare('SELECT COUNT(*) n FROM exercise_workspaces').get()).n).toBe(1);
 
     await stu.put(`/api/projects/${pid}/file`).send({ path: 'notes.md', content: 'Always add tests first.' });
     await stu.put(`/api/projects/${pid}/file`).send({ path: 'README.md', content: '# Changed\n' });
-    fakeSession(pid, stu.id, { prompt: 'Please write tests for the parser', tools: ['propose_plan', 'write_file'] });
+    await fakeSession(pid, stu.id, { prompt: 'Please write tests for the parser', tools: ['propose_plan', 'write_file'] });
 
     const res = (await submit(stu, att)).body;
     const ans = res.questions[0];
@@ -126,7 +127,7 @@ describe('an exercise attempt', () => {
   it('survives a deleted workspace: checks fail, nothing crashes', async () => {
     await setup(spec({ rubric: [] }));
     const att = await start();
-    fs.rmSync(projectDir(att.questions[0].exercise.workspace.projectId), { recursive: true, force: true });
+    fs.rmSync(await projectDir(att.questions[0].exercise.workspace.projectId), { recursive: true, force: true });
     const res = (await submit(stu, att)).body;
     expect(res.questions[0].response.checks.every((c) => !c.passed)).toBe(true); // even "file missing" does not pass for a workspace that is gone
     expect(res.status).toBe('graded');
@@ -134,7 +135,7 @@ describe('an exercise attempt', () => {
 
   it('does not read through symlinks that point outside the workspace', async () => {
     await setup(spec({ checks: [{ type: 'file_contains', label: 'Link', points: 1, path: 'link.txt', text: 'localhost' }, { type: 'file_exists', label: 'Real', points: 1, path: 'README.md' }], rubric: [] }));
-    const att = await start(); const dir = projectDir(att.questions[0].exercise.workspace.projectId);
+    const att = await start(); const dir = await projectDir(att.questions[0].exercise.workspace.projectId);
     fs.symlinkSync('/etc/hosts', path.join(dir, 'link.txt'));
     const res = (await submit(stu, att)).body;
     expect(res.questions[0].response.checks.map((c) => c.passed)).toEqual([false, true]);
@@ -142,8 +143,8 @@ describe('an exercise attempt', () => {
   });
 
   it('tells a learner without agent access, but the attempt still works', async () => {
-    makeRole('viewer', ['course.learn']);
-    const v = login(app, { username: 'viewer1', roles: ['viewer'] });
+    await makeRole('viewer', ['course.learn']);
+    const v = await login(app, { username: 'viewer1', roles: ['viewer'] });
     await inst.post(`/api/courses/${course.id}/enrollments`).send({ type: 'user', id: v.id });
     await setup(spec({ rubric: [] }));
     const att = await start(v);

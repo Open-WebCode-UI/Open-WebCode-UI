@@ -85,7 +85,7 @@ export function assessmentsRouter() {
     const c = await authorCourse(req); const b = validate(assessmentBody, req.body); if (!b.title) fail(400, 'validation_error', { issues: [{ path: 'title', message: 'required' }] }); const st = assessmentSettings(b, []);
     if (b.moduleId != null && !(await moduleBelongsTo(c.id, b.moduleId))) fail(404, 'module_not_found');
     const { assessmentId: id } = await createAssessmentPage(c.id, { moduleId: b.moduleId, title: b.title, mode: st.mode, passScore: st.passPct, maxAttempts: st.maxAttempts });
-    audit(req.user.id, 'course.assessment.create', String(c.id), { assessment: id });
+    await audit(req.user.id, 'course.assessment.create', String(c.id), { assessment: id });
     res.status(201).json({ ...assessmentDto(await k()('assessments').where({ id }).first()), locked: false, questions: [] });
   });
   route.put('/courses/:id/assessments/:aid', 'course.author', async (req, res) => {
@@ -94,13 +94,13 @@ export function assessmentsRouter() {
     const title = b.title ?? a.title;
     await k()('assessments').where({ id: a.id }).update({ title, mode: st.mode, pass_score: st.passPct, max_attempts: st.maxAttempts });
     if (a.page_id) await k()('course_pages').where({ id: a.page_id }).update({ title }); // the page and its assessment share a title
-    audit(req.user.id, 'course.assessment.update', String(c.id), { assessment: a.id });
+    await audit(req.user.id, 'course.assessment.update', String(c.id), { assessment: a.id });
     res.json(assessmentDto(await k()('assessments').where({ id: a.id }).first()));
   });
   route.delete('/courses/:id/assessments/:aid', 'course.author', async (req, res) => {
     const c = await authorCourse(req); const a = await getAssessment(req, c.id);
     await deleteAssessmentAndPage(a);
-    audit(req.user.id, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title });
+    await audit(req.user.id, 'course.assessment.delete', String(c.id), { assessment: a.id, title: a.title });
     res.json({ ok: true });
   });
   route.post('/courses/:id/assessments/:aid/questions', 'course.author', async (req, res) => {
@@ -158,7 +158,7 @@ export function assessmentsRouter() {
   const attemptView = async (att, a, { owner }) => {
     const answers = new Map((await k()('answers').where({ attempt_id: att.id })).map((x) => [x.question_id, x]));
     const open = att.status === 'in_progress';
-    const perms = userPermissions(att.user_id); // can the learner use the agent on their workspace? (their own permissions apply)
+    const perms = await userPermissions(att.user_id); // can the learner use the agent on their workspace? (their own permissions apply)
     const agentAccess = ['agent.plan', 'project.read', 'files.read', 'provider.use'].every((p) => perms.has(p));
     return {
       id: att.id, assessmentId: a.id, title: a.title, status: att.status, startedAt: att.started_at, submittedAt: att.submitted_at, mode: a.mode, passPct: a.pass_score,
@@ -283,7 +283,7 @@ export function assessmentsRouter() {
       await t('answers').where({ attempt_id: att.id, question_id: q.id }).update({ score, feedback, graded_by: req.user.id, ...(response && { response_json: JSON.stringify(response) }) });
       await finalize(att.id, c.id, a, t);
     });
-    audit(req.user.id, 'course.grade', String(c.id), { attempt: att.id, question: q.id, score });
+    await audit(req.user.id, 'course.grade', String(c.id), { attempt: att.id, question: q.id, score });
     res.json(await attemptView(await k()('attempts').where({ id: att.id }).first(), a, { owner: false }));
   });
 

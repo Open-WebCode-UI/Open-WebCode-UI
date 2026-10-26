@@ -1,6 +1,7 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login, addProvider, fakeAdapterFactory } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { saveSettings, getSettings } from '../src/settings.js';
 import { docText } from '../src/courses/tutor.js';
 import { PRESETS } from '../src/courses/policy.js';
@@ -10,13 +11,13 @@ const doc = { type: 'doc', content: [{ type: 'heading', attrs: { level: 2 }, con
 const turn = (u, body, pid = page.id) => u.post(`/api/courses/${course.id}/pages/${pid}/turn`).send(body).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
 
 beforeEach(async () => {
-  freshDb(); const mid = addProvider();
-  saveSettings('general', { ...getSettings('general'), defaultModels: { plan: null, act: null, chat: mid } });
+  await freshDb(); const mid = await addProvider();
+  await saveSettings('general', { ...getSettings('general'), defaultModels: { plan: null, act: null, chat: mid } });
   seen = [];
   app = createApp({ deps: { adapterFactory: fakeAdapterFactory((script = [[{ type: 'text', text: 'Think about scope.' }], [{ type: 'text', text: 'Good.' }]]), seen) } });
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['developer'] });
-  admin = login(app, { username: 'boss1', roles: ['administrator'] });
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['developer'] });
+  admin = await login(app, { username: 'boss1', roles: ['administrator'] });
   course = (await inst.post('/api/courses').send({ title: 'JS Basics' })).body;
   await inst.put(`/api/courses/${course.id}`).send({ title: 'JS Basics', status: 'published' });
   page = (await inst.post(`/api/courses/${course.id}/pages`).send({ title: 'Scope', layout: 'agent', content: doc, config: { systemPrompt: 'Use Socratic questions.', subpanels: ['hints'], subpanelContent: { hints: { hints: ['Look at where x is declared'] } } } })).body;
@@ -38,7 +39,7 @@ describe('course tutor panel', () => {
     expect(seen.at(-1).messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
     const hist = (await stu.get(`/api/courses/${course.id}/pages/${page.id}/conversation`)).body;
     expect(hist.messages.map((m) => m.content)).toEqual(['What is a closure?', 'Think about scope.', 'Another?', 'Good.']);
-    expect(getDb().prepare("SELECT kind FROM usage ORDER BY id DESC").get().kind).toBe('course');
+    expect((await sqlDb().prepare("SELECT kind FROM usage ORDER BY id DESC").get()).kind).toBe('course');
     // other users have their own history; the chat page's lists never include course conversations
     expect((await inst.get(`/api/courses/${course.id}/pages/${page.id}/conversation`)).body.messages).toEqual([]);
     expect((await stu.get('/api/conversations?kind=chat')).body).toEqual([]);
@@ -47,7 +48,7 @@ describe('course tutor panel', () => {
   });
 
   it('only enrolled learners (or the authors) can use the panel; content pages have none', async () => {
-    const outsider = login(app, { username: 'outsider1', roles: ['developer'] });
+    const outsider = await login(app, { username: 'outsider1', roles: ['developer'] });
     expect((await turn(outsider, { message: 'hi' })).status).toBe(404);
     expect((await turn(inst, { message: 'preview try' })).status).toBe(200);
     const plain = (await inst.post(`/api/courses/${course.id}/pages`).send({ title: 'Plain' })).body;
@@ -56,11 +57,11 @@ describe('course tutor panel', () => {
   });
 
   it('stops a runaway conversation', async () => {
-    const mid = getDb().prepare('SELECT id FROM conversations').get();
+    const mid = (await sqlDb().prepare('SELECT id FROM conversations').get());
     expect(mid).toBeUndefined();
     await turn(stu, { message: 'first' });
-    const conv = getDb().prepare("SELECT id FROM conversations WHERE kind='course'").get().id;
-    const ins = getDb().prepare("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)");
+    const conv = (await sqlDb().prepare("SELECT id FROM conversations WHERE kind='course'").get()).id;
+    const ins = sqlDb().prepare("INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)");
     for (let i = 0; i < 100; i++) ins.run(conv, 'user', JSON.stringify({ role: 'user', content: 'x' }));
     expect((await turn(stu, { message: 'more' })).status).toBe(429);
   });
@@ -89,16 +90,16 @@ describe('course tutor panel', () => {
   });
 
   it('uses the model chosen for the page, and only lets an instructor pick one they can use', async () => {
-    const second = Number(getDb().prepare("INSERT INTO models (provider_id, model_id, label) SELECT provider_id, 'other', 'Other' FROM models LIMIT 1").run().lastInsertRowid);
+    const second = Number((await sqlDb().prepare("INSERT INTO models (provider_id, model_id, label) SELECT provider_id, 'other', 'Other' FROM models LIMIT 1").run()).lastInsertRowid);
     const body = (config) => ({ title: 'Scope', layout: 'agent', content: doc, config });
     expect((await inst.put(`/api/courses/${course.id}/pages/${page.id}`).send(body({ modelId: 99999 }))).status).toBe(400);
     expect((await inst.put(`/api/courses/${course.id}/pages/${page.id}`).send(body({ modelId: second }))).status).toBe(200);
     await turn(stu, { message: 'Which model?' });
-    expect(getDb().prepare('SELECT model_row_id m FROM usage ORDER BY id DESC').get().m).toBe(second);
+    expect((await sqlDb().prepare('SELECT model_row_id m FROM usage ORDER BY id DESC').get()).m).toBe(second);
   });
   it('lets the administrator restrict which models an instructor can choose', async () => {
-    const second = Number(getDb().prepare("INSERT INTO models (provider_id, model_id, label) SELECT provider_id, 'other', 'Other' FROM models LIMIT 1").run().lastInsertRowid);
-    const first = getDb().prepare('SELECT id FROM models WHERE id<>?').get(second).id;
+    const second = Number((await sqlDb().prepare("INSERT INTO models (provider_id, model_id, label) SELECT provider_id, 'other', 'Other' FROM models LIMIT 1").run()).lastInsertRowid);
+    const first = (await sqlDb().prepare('SELECT id FROM models WHERE id<>?').get(second)).id;
     const save = (modelId) => inst.put(`/api/courses/${course.id}/pages/${page.id}`).send({ title: 'Scope', layout: 'agent', content: doc, config: { modelId } });
     expect((await inst.get('/api/courses-allowed-models')).body.allowed).toBe(null);
     expect((await save(second)).status).toBe(200);
@@ -111,9 +112,9 @@ describe('course tutor panel', () => {
     expect((await save(first)).status).toBe(200);
     // a page that already uses a model that is no longer allowed falls back to the platform default for learners
     await save(first);
-    getDb().prepare('UPDATE course_pages SET config_json=? WHERE id=?').run(JSON.stringify({ modelId: second }), page.id);
+    (await sqlDb().prepare('UPDATE course_pages SET config_json=? WHERE id=?').run(JSON.stringify({ modelId: second }), page.id));
     await turn(stu, { message: 'Which model?' });
-    expect(getDb().prepare('SELECT model_row_id m FROM usage ORDER BY id DESC').get().m).not.toBe(second);
+    expect((await sqlDb().prepare('SELECT model_row_id m FROM usage ORDER BY id DESC').get()).m).not.toBe(second);
     // exercises are held to the same list
     const a = (await inst.post(`/api/courses/${course.id}/assessments`).send({ title: 'Quiz' })).body;
     const ex = (modelId) => inst.post(`/api/courses/${course.id}/assessments/${a.id}/questions`).send({ type: 'exercise', prompt: 'Do it', spec: { brief: 'b', rubric: [{ label: 'ok', points: 1 }], policy: { ...PRESETS.guided, modelId } } });
@@ -128,8 +129,8 @@ describe('course tutor panel', () => {
 describe('tutor thinking', () => {
   const think = [{ type: 'thinking', text: 'Let me consider.' }, { type: 'text', text: 'Answer.' }];
   const setup = async (thinking) => {
-    getDb().prepare("UPDATE models SET thinking_mode='adaptive'").run();
-    const cfg = { ...JSON.parse(getDb().prepare('SELECT config_json FROM course_pages WHERE id=?').get(page.id).config_json), ...(thinking === undefined ? {} : { thinking }) };
+    (await sqlDb().prepare("UPDATE models SET thinking_mode='adaptive'").run());
+    const cfg = { ...JSON.parse((await sqlDb().prepare('SELECT config_json FROM course_pages WHERE id=?').get(page.id)).config_json), ...(thinking === undefined ? {} : { thinking }) };
     const r = await inst.put(`/api/courses/${course.id}/pages/${page.id}`).send({ title: 'Scope', layout: 'agent', content: doc, config: cfg });
     expect(r.status).toBe(200);
   };

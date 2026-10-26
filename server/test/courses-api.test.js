@@ -11,12 +11,12 @@ async function course(status) {
 }
 
 describe('courses API', () => {
-  beforeEach(() => {
-    freshDb(); app = createApp();
-    inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-    other = login(app, { username: 'teacher2', roles: ['instructor'] });
-    stu = login(app, { username: 'student1', roles: ['developer'] });
-    admin = login(app, { username: 'boss1', roles: ['administrator'] });
+  beforeEach(async () => {
+    await freshDb(); app = createApp();
+    inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+    other = await login(app, { username: 'teacher2', roles: ['instructor'] });
+    stu = await login(app, { username: 'student1', roles: ['developer'] });
+    admin = await login(app, { username: 'boss1', roles: ['administrator'] });
   });
 
   it('only instructors can create courses', async () => {
@@ -125,7 +125,7 @@ describe('courses API', () => {
 describe('modules', () => {
   const outline = async (u, id) => (await u.get(`/api/courses/${id}`)).body.outline;
   const setup = async () => {
-    freshDb(); const app = createApp(); const inst = login(app, { username: 'modt', roles: ['instructor'] });
+    await freshDb(); const app = createApp(); const inst = await login(app, { username: 'modt', roles: ['instructor'] });
     const c = (await inst.post('/api/courses').send({ title: 'Mods' })).body;
     const page = async (title, extra = {}) => (await inst.post(`/api/courses/${c.id}/pages`).send({ title, ...extra })).body;
     return { app, inst, c, page };
@@ -167,7 +167,7 @@ describe('modules', () => {
     const other = (await inst.post('/api/courses').send({ title: 'Other' })).body;
     expect((await inst.put(`/api/courses/${c.id}/pages/${a.id}`).send(body(99999))).status).toBe(404);
     expect((await inst.post(`/api/courses/${other.id}/pages`).send({ title: 'X', moduleId: m.id })).status).toBe(404);
-    expect((await login(app, { username: 'modt2', roles: ['instructor'] }).post(`/api/courses/${c.id}/modules`).send({ title: 'Z' })).status).toBe(404);
+    expect((await (await login(app, { username: 'modt2', roles: ['instructor'] })).post(`/api/courses/${c.id}/modules`).send({ title: 'Z' })).status).toBe(404);
   });
 
   it('renames a module, and deleting one keeps its pages at the top level where it was', async () => {

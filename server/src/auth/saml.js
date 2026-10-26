@@ -114,8 +114,8 @@ export function samlRouter() {
   // IdP posts cross-site, so Origin/CSRF-token checks don't apply; trust comes from signature + InResponseTo.
   route.post('/acs', 'public', { csrfExempt: true }, express.urlencoded({ extended: false, limit: '512kb' }), rateLimit('saml-acs', 60, 60_000), async (req, res, next) => {
     const cfg = getSettings('saml'), sec = getSettings('security'), k = getKnex();
-    const deny = (code, extra = {}) => {
-      audit(null, 'auth.saml.denied', code, { ...extra, ip: req.ip });
+    const deny = async (code, extra = {}) => {
+      await audit(null, 'auth.saml.denied', code, { ...extra, ip: req.ip });
       res.status(403).type('html').send(`<!doctype html><meta charset=utf-8><title>Sign-in failed</title><body style="font-family:sans-serif;max-width:40em;margin:4em auto"><h2>Sign-in failed</h2><p>${escapeHtml(code)}${extra.missing ? `: ${escapeHtml(extra.missing.join(', '))}` : ''}</p><p><a href="/">Back</a></p>`);
     };
     try {
@@ -149,7 +149,7 @@ export function samlRouter() {
       const roles = await syncRolesFromGroups(uid, id.groups, cfg);
       if (!roles.length && !(await k('user_roles').where({ user_id: uid }).first('role_id'))) return deny('no_mapped_role', { groups: id.groups });
 
-      const required = mfaRequiredFor(uid);
+      const required = await mfaRequiredFor(uid);
       const mfa = checkSamlMfa(ctx, sec, required);
       if (!mfa.ok) return deny(mfa.reasons[0], { user: uid });
 
@@ -158,13 +158,13 @@ export function samlRouter() {
         const s = await k('sessions').where({ id: sid, revoked: 0 }).first();
         if (!s || s.user_id !== uid) return deny('stepup_user_mismatch');
         await k('sessions').where({ id: sid }).update({ stepup_at: now() });
-        audit(uid, 'auth.saml.stepup', null);
+        await audit(uid, 'auth.saml.stepup', null);
         return res.redirect(safeRelay(rest.join(':')));
       }
       const s = await createSession(uid, { stage: 'full', req, mfaSatisfied: required, stepup: true });
       await k('users').where({ id: uid }).update({ last_login: now() });
       setSessionCookie(res, s.id);
-      audit(uid, 'auth.saml.login', null, { roles, nameIdFormat: id.nameIdFormat, authnContext: ctx.authnContext, ip: req.ip });
+      await audit(uid, 'auth.saml.login', null, { roles, nameIdFormat: id.nameIdFormat, authnContext: ctx.authnContext, ip: req.ip });
       res.redirect(safeRelay(relay.target));
     } catch (e) { next(e); }
   });

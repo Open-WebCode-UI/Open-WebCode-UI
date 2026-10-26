@@ -1,13 +1,14 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 
 let app, u;
-beforeEach(() => { freshDb(); app = createApp(); u = login(app, { username: 'dee' }); });
+beforeEach(async () => { await freshDb(); app = createApp(); u = await login(app, { username: 'dee' }); });
 
 describe('profile account', () => {
   it('lets a local user change their name; display name follows; email is untouched', async () => {
-    getDb().prepare("UPDATE users SET email='dee@x.test' WHERE id=?").run(u.id);
+    (await sqlDb().prepare("UPDATE users SET email='dee@x.test' WHERE id=?").run(u.id));
     const r = await u.put('/api/profile/account').send({ firstName: ' Dee ', lastName: 'Veloper' });
     expect(r.status).toBe(200);
     expect(r.body.user).toMatchObject({ firstName: 'Dee', lastName: 'Veloper', displayName: 'Dee Veloper', email: 'dee@x.test' });
@@ -16,10 +17,10 @@ describe('profile account', () => {
     expect((await u.put('/api/profile/account').send({ firstName: '', lastName: '' })).status).toBe(400);
     expect((await u.put('/api/profile/account').send({ firstName: 'A', lastName: 'B', email: 'evil@x.test' })).status).toBe(400);
     expect((await u.put('/api/profile/account').send({ firstName: 'A'.repeat(101), lastName: '' })).status).toBe(400);
-    expect(getDb().prepare('SELECT email FROM users WHERE id=?').get(u.id).email).not.toBe('evil@x.test');
+    expect((await sqlDb().prepare('SELECT email FROM users WHERE id=?').get(u.id)).email).not.toBe('evil@x.test');
   });
   it('is refused for single sign-on users', async () => {
-    getDb().prepare("UPDATE users SET source='saml', username=NULL, idp_entity_id='i', name_id='n' WHERE id=?").run(u.id);
+    (await sqlDb().prepare("UPDATE users SET source='saml', username=NULL, idp_entity_id='i', name_id='n' WHERE id=?").run(u.id));
     expect((await u.put('/api/profile/account').send({ firstName: 'A', lastName: 'B' })).status).toBe(403);
   });
 });
@@ -38,7 +39,7 @@ describe('profile preferences', () => {
       expect((await u.put('/api/profile/preferences').send(bad)).status).toBe(400);
   });
   it('falls back to defaults when the stored value is corrupt', async () => {
-    getDb().prepare("UPDATE users SET preferences='{not json' WHERE id=?").run(u.id);
+    (await sqlDb().prepare("UPDATE users SET preferences='{not json' WHERE id=?").run(u.id));
     expect((await u.get('/api/profile/preferences')).body.fontScale).toBe(100);
   });
   it('requires authentication', async () => {

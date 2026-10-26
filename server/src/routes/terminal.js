@@ -13,7 +13,7 @@ export function terminalRouter({ manager = terminals } = {}) {
 
   // What the Terminal pane may do right now (no secrets: only booleans and session ids the caller owns).
   route.get('/terminal/status', 'authenticated', async (req, res) => {
-    const perms = userPermissions(req.user.id), p = await project(req, Number(req.query.projectId));
+    const perms = await userPermissions(req.user.id), p = await project(req, Number(req.query.projectId));
     const on = shellEnabled();
     const user = on && perms.has('terminal.use') ? manager.find(req.user.id, p.id, 'user') : null;
     const agent = on && (perms.has('agent.shell.run') || perms.has('terminal.use')) ? manager.find(req.user.id, p.id, 'agent') : null;
@@ -28,13 +28,13 @@ export function terminalRouter({ manager = terminals } = {}) {
     let s; const fresh = !manager.find(req.user.id, p.id, 'user');
     try { s = await manager.create({ userId: req.user.id, projectId: p.id, kind: 'user', cwd: p.dir, cols: b.cols, rows: b.rows }); }
     catch (e) { if (e.status === 429) fail(429, 'too_many_terminals'); throw e; }
-    if (fresh) audit(req.user.id, 'terminal.open', p.name); // reopening an existing session is not a new shell
+    if (fresh) await audit(req.user.id, 'terminal.open', p.name); // reopening an existing session is not a new shell
     res.status(201).json({ id: s.id });
   });
-  route.delete('/terminal/sessions/:id', 'terminal.use', (req, res) => {
+  route.delete('/terminal/sessions/:id', 'terminal.use', async (req, res) => {
     const s = manager.get(req.params.id);
     if (!s || s.userId !== req.user.id || s.kind !== 'user') fail(404, 'not_found');
-    manager.close(s.id); audit(req.user.id, 'terminal.close', String(s.projectId));
+    manager.close(s.id); await audit(req.user.id, 'terminal.close', String(s.projectId));
     res.json({ ok: true });
   });
   return r;

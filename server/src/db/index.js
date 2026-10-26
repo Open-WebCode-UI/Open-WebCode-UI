@@ -1,43 +1,54 @@
-import Database from 'better-sqlite3';
-import { createKnex, knexOnConnection } from './knex.js';
-import { legacySchema, legacyMigrate } from './legacy-migrate.js';
+import { createKnex } from './knex.js';
+import { migrateToLatest } from './migrator.js';
+import { loadSettings } from '../settings.js';
 import { ALL_PERMISSIONS, BUILTIN_ROLES } from '../permissions.js';
+import { resolveDbConfig } from './connection.js';
 
-let current;
+let current = null;
 
-export function openDb(file = ':memory:') {
-  const db = new Database(file);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.exec(legacySchema);
-  legacyMigrate(db);
-  seedRoles(db);
-  return db;
+/** Opens a database (a Knex handle), brings its schema up to date, seeds the built-in roles and loads the settings cache. */
+export async function openDb(file = ':memory:') {
+  const knex = createKnex({ client: 'sqlite', file });
+  try {
+    await migrateToLatest(knex);
+    await seedRoles(knex);
+    await loadSettings(knex);
+  } catch (e) { await knex.destroy(); throw e; }
+  return knex;
 }
 
-export function seedRoles(db) {
+/** Opens the configured database for the server process (see db/connection.js for how the engine is chosen). */
+export async function initDb(dbConfig = resolveDbConfig()) {
+  const knex = createKnex(dbConfig);
+  try {
+    await migrateToLatest(knex);
+    await seedRoles(knex);
+    await loadSettings(knex);
+  } catch (e) { await knex.destroy(); throw e; }
+  current = knex;
+  return knex;
+}
+
+export async function seedRoles(knex) {
   for (const [name, def] of Object.entries(BUILTIN_ROLES)) {
-    let row = db.prepare('SELECT id FROM roles WHERE name=?').get(name);
+    let row = await knex('roles').where({ name }).first('id');
     if (!row) {
-      const r = db.prepare('INSERT INTO roles (name, description, builtin) VALUES (?,?,1)').run(name, def.description);
-      row = { id: Number(r.lastInsertRowid) };
+      const [inserted] = await knex('roles').insert({ name, description: def.description, builtin: 1 }).returning('id');
+      row = { id: Number(inserted?.id ?? inserted) };
     }
     // Administrator is immutable: always resynced to the full permission list.
     if (name === 'administrator') {
-      db.prepare('DELETE FROM role_permissions WHERE role_id=?').run(row.id);
-      for (const p of ALL_PERMISSIONS) db.prepare('INSERT INTO role_permissions VALUES (?,?)').run(row.id, p);
-    } else if (!db.prepare('SELECT 1 FROM role_permissions WHERE role_id=? LIMIT 1').get(row.id)) {
-      for (const p of def.permissions) db.prepare('INSERT INTO role_permissions VALUES (?,?)').run(row.id, p);
+      await knex('role_permissions').where({ role_id: row.id }).del();
+      await knex('role_permissions').insert(ALL_PERMISSIONS.map((permission) => ({ role_id: row.id, permission })));
+    } else if (!(await knex('role_permissions').where({ role_id: row.id }).first('permission'))) {
+      if (def.permissions.length) await knex('role_permissions').insert(def.permissions.map((permission) => ({ role_id: row.id, permission })));
     }
   }
 }
 
-export function initDb(file) { current = openDb(file); knex = knexOnConnection(current); return current; }
-export function getDb() { if (!current) throw new Error('DB not initialized'); return current; }
-export function setDb(db) { current = db; knex = knexOnConnection(db); }
-
-// Knex handle for the multi-engine layer. Call sites move from getDb() (better-sqlite3, SQLite only) to getKnex() file by file.
-let knex;
-export function initKnex(dbConfig) { knex = createKnex(dbConfig); return knex; }
-export function getKnex() { if (!knex) throw new Error('Knex not initialized'); return knex; }
-export function setKnex(k) { knex = k; }
+export function getKnex() {
+  if (!current) throw new Error('DB not initialized');
+  return current;
+}
+/** Points the process at another handle (tests use one per file). The settings cache follows it. */
+export async function setDb(knex) { current = knex; await loadSettings(knex); }

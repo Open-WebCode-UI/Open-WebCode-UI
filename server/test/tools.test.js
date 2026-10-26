@@ -118,7 +118,7 @@ describe('file tools', () => {
   it('rejects binary files and bad regex', async () => {
     fs.writeFileSync(path.join(root, 'b.bin'), Buffer.from([0, 1, 2]));
     expect(await executeTool('read_file', { path: 'b.bin' }, base())).toMatch(/binary/);
-    expect(await executeTool('search', { pattern: '(' }, base())).toMatch(/invalid/);
+    expect((await executeTool('search', { pattern: '(' }, base()))).toMatch(/invalid/);
   });
   it('search explains fs errors instead of returning a bare code', async () => {
     expect(await executeTool('search', { pattern: 'one', path: 'a.js' }, base())).toMatch(/^Error: ENOTDIR\. The path 'a\.js' is a file[\s\S]*read_file/);

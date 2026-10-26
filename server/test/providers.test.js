@@ -95,13 +95,13 @@ describe('stream normalization', () => {
 describe('provider admin API', () => {
   let app, admin;
   const lookup = async (h) => [{ address: ['localhost', '127.0.0.1'].includes(h) ? '127.0.0.1' : '93.184.216.34' }]; // hermetic: no real DNS
-  beforeEach(() => { freshDb(); app = createApp({ deps: { lookup } }); admin = login(app, { username: 'provadmin', roles: ['administrator'] }); });
+  beforeEach(async () => { await freshDb(); app = createApp({ deps: { lookup } }); admin = await login(app, { username: 'provadmin', roles: ['administrator'] }); });
   it('CRUD, masked key, model management, default models, role allow-list', async () => {
     const c = await admin.post('/api/admin/providers').send({ name: 'Azure', type: 'azure', config: { baseUrl: 'https://res.openai.azure.com', deployment: 'gpt', apiVersion: '2024-10-21' }, secret: 'topsecret' });
     expect(c.status).toBe(201); expect(JSON.stringify(c.body)).not.toContain('topsecret'); expect(c.body.hasSecret).toBe(true);
     const m = await admin.post(`/api/admin/providers/${c.body.id}/models`).send({ modelId: 'gpt-x', maxTokens: 2048 });
     expect(m.body.models[0]).toMatchObject({ modelId: 'gpt-x', enabled: true, maxTokens: 2048 });
-    const dev = login(app, { username: 'devperson' });
+    const dev = await login(app, { username: 'devperson' });
     expect((await dev.get('/api/models')).body.models).toHaveLength(1);
     await admin.put(`/api/admin/providers/${c.body.id}`).send({ name: 'Azure', type: 'azure', config: { baseUrl: 'https://res.openai.azure.com' }, allowedRoles: ['administrator'] });
     expect((await dev.get('/api/models')).body.models).toHaveLength(0); // role allow-list
@@ -151,8 +151,8 @@ describe('local servers that stream tool calls unevenly', () => {
 
 describe('model picker details', () => {
   it('stores provider help text, and shows prices to users only when the admin allows it', async () => {
-    freshDb(); const app = createApp();
-    const admin = login(app, { username: 'adm', roles: ['administrator'] }), dev = login(app, { username: 'dev1', roles: ['developer'] });
+    await freshDb(); const app = createApp();
+    const admin = await login(app, { username: 'adm', roles: ['administrator'] }), dev = await login(app, { username: 'dev1', roles: ['developer'] });
     const mk = await admin.post('/api/admin/providers').send({ name: 'Acme', type: 'openai', secret: 'k', helpText: '  Best for quick edits.  ' });
     expect(mk.status).toBe(201); expect(mk.body.helpText).toBe('Best for quick edits.');
     await admin.post(`/api/admin/providers/${mk.body.id}/models`).send({ modelId: 'm1', label: 'Model One', contextSize: 200000, inputPrice: 3, outputPrice: 15 });
@@ -169,8 +169,8 @@ describe('model picker details', () => {
     expect((await admin.put(`/api/admin/providers/${mk.body.id}`).send({ name: 'Acme', type: 'openai', helpText: '' })).body.helpText).toBe('');
   });
   it('automatic context sizing is kept per model and hides the fixed size from users', async () => {
-    freshDb(); const app = createApp();
-    const admin = login(app, { username: 'adm', roles: ['administrator'] }), dev = login(app, { username: 'dev1', roles: ['developer'] });
+    await freshDb(); const app = createApp();
+    const admin = await login(app, { username: 'adm', roles: ['administrator'] }), dev = await login(app, { username: 'dev1', roles: ['developer'] });
     const mk = await admin.post('/api/admin/providers').send({ name: 'Local', type: 'openai', secret: 'k' });
     const save = (extra) => admin.post(`/api/admin/providers/${mk.body.id}/models`).send({ modelId: 'm1', contextSize: 32000, ...extra });
     expect((await save({ autoContext: true })).body.models[0]).toMatchObject({ autoContext: true, contextSize: 32000 });
@@ -180,8 +180,8 @@ describe('model picker details', () => {
     expect((await dev.get('/api/models')).body.models[0]).toMatchObject({ autoContext: false, contextSize: 32000 });
   });
   it('stores per-model help text, keeps it when other fields change, and shows it to users', async () => {
-    freshDb(); const app = createApp();
-    const admin = login(app, { username: 'adm', roles: ['administrator'] }), dev = login(app, { username: 'dev1', roles: ['developer'] });
+    await freshDb(); const app = createApp();
+    const admin = await login(app, { username: 'adm', roles: ['administrator'] }), dev = await login(app, { username: 'dev1', roles: ['developer'] });
     const mk = await admin.post('/api/admin/providers').send({ name: 'LM', type: 'lmstudio', config: {} });
     const url = `/api/admin/providers/${mk.body.id}/models`;
     const r = await admin.post(url).send({ modelId: 'qwen', helpText: '  Good for quick edits.  ' });
@@ -195,8 +195,8 @@ describe('model picker details', () => {
 
 describe('ordering', () => {
   it('reorders providers and models, validates the list, and the model picker follows', async () => {
-    freshDb(); const app = createApp();
-    const admin = login(app, { username: 'adm', roles: ['administrator'] }), dev = login(app, { username: 'dev1', roles: ['developer'] });
+    await freshDb(); const app = createApp();
+    const admin = await login(app, { username: 'adm', roles: ['administrator'] }), dev = await login(app, { username: 'dev1', roles: ['developer'] });
     const a = (await admin.post('/api/admin/providers').send({ name: 'A', type: 'openai', secret: 'k' })).body.id;
     const b = (await admin.post('/api/admin/providers').send({ name: 'B', type: 'openai', secret: 'k' })).body.id;
     for (const [p, m] of [[a, 'a1'], [a, 'a2'], [b, 'b1']]) await admin.post(`/api/admin/providers/${p}/models`).send({ modelId: m });

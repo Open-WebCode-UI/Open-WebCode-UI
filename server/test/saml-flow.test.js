@@ -1,9 +1,10 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import zlib from 'node:zlib';
 import selfsigned from 'selfsigned';
 import { SignedXml } from 'xml-crypto';
 import { freshDb, createApp, request } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { saveSettings, getSettings, NAMEID } from '../src/settings.js';
 
 const SP = 'http://localhost:3000/auth/saml/metadata', ACS = 'http://localhost:3000/auth/saml/acs', IDP = 'https://idp.example.com/entity';
@@ -15,13 +16,13 @@ beforeAll(async () => {
   idpKey = await selfsigned.generate([{ name: 'commonName', value: 'idp' }], { days: 30, keySize: 2048, algorithm: 'sha256' });
   otherKey = await selfsigned.generate([{ name: 'commonName', value: 'evil' }], { days: 30, keySize: 2048, algorithm: 'sha256' });
 });
-beforeEach(() => {
-  freshDb(); app = createApp();
-  saveSettings('saml', { ...getSettings('saml'), enabled: true, ssoUrl: 'https://idp.example.com/sso', idpEntityId: IDP, idpCerts: [idpKey.cert] });
-  const dev = getDb().prepare("SELECT id FROM roles WHERE name='developer'").get().id;
-  const adm = getDb().prepare("SELECT id FROM roles WHERE name='administrator'").get().id;
-  getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('devs', dev);
-  getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('CN=Admins,OU=G,DC=c', adm);
+beforeEach(async () => {
+  await freshDb(); app = createApp();
+  await saveSettings('saml', { ...getSettings('saml'), enabled: true, ssoUrl: 'https://idp.example.com/sso', idpEntityId: IDP, idpCerts: [idpKey.cert] });
+  const dev = (await sqlDb().prepare("SELECT id FROM roles WHERE name='developer'").get()).id;
+  const adm = (await sqlDb().prepare("SELECT id FROM roles WHERE name='administrator'").get()).id;
+  (await sqlDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('devs', dev));
+  (await sqlDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('CN=Admins,OU=G,DC=c', adm));
 });
 
 async function startLogin(query = '') {
@@ -56,7 +57,7 @@ describe('SAML SP flow (locally signed assertions)', () => {
     expect(req).toContain(`<saml:Issuer`); expect(req).toContain(SP);
   });
   it('honors an administrator-chosen NameID format', async () => {
-    saveSettings('saml', { ...getSettings('saml'), nameIdFormat: NAMEID.unspecified });
+    await saveSettings('saml', { ...getSettings('saml'), nameIdFormat: NAMEID.unspecified });
     expect((await startLogin()).req).toContain(`Format="${NAMEID.unspecified}"`);
   });
   it('logs in with an opaque persistent NameID, JIT-provisions the user, and maps groups to roles', async () => {
@@ -64,7 +65,7 @@ describe('SAML SP flow (locally signed assertions)', () => {
     const res = await post(buildResponse({ inResponseTo: id }), relay);
     expect(res.status).toBe(302); expect(res.headers.location).toBe('/projects');
     expect(res.headers['set-cookie'][0]).toMatch(/^sid=.*HttpOnly.*SameSite=Lax/i);
-    const u = getDb().prepare("SELECT * FROM users WHERE source='saml'").get();
+    const u = (await sqlDb().prepare("SELECT * FROM users WHERE source='saml'").get());
     expect(u).toMatchObject({ name_id: 'opaque-persistent-id', email: 'ann@example.com', first_name: 'Ann', last_name: 'Lee', idp_entity_id: IDP });
     const cookie = res.headers['set-cookie'][0].split(';')[0];
     const me = await request(app).get('/api/auth/me').set('Cookie', cookie);
@@ -75,7 +76,7 @@ describe('SAML SP flow (locally signed assertions)', () => {
     const { id, relay } = await startLogin();
     const res = await post(buildResponse({ inResponseTo: id, nameId: 'jdoe', format: NAMEID.unspecified }), relay);
     expect(res.status).toBe(302);
-    expect(getDb().prepare("SELECT name_id FROM users WHERE source='saml'").get().name_id).toBe('jdoe');
+    expect((await sqlDb().prepare("SELECT name_id FROM users WHERE source='saml'").get()).name_id).toBe('jdoe');
   });
   it('denies logins missing required attributes, with a clear message', async () => {
     const { id, relay } = await startLogin();
@@ -101,7 +102,7 @@ describe('SAML SP flow (locally signed assertions)', () => {
       expect(res.status, name).toBe(403);
       expect(res.headers['set-cookie'], name).toBeUndefined();
     }
-    expect(getDb().prepare("SELECT COUNT(*) c FROM users WHERE source='saml'").get().c).toBe(0);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM users WHERE source='saml'").get()).c).toBe(0);
   });
   it('rejects replays, unsolicited (IdP-initiated) responses and forged RelayState', async () => {
     const { id, relay } = await startLogin();
@@ -118,7 +119,7 @@ describe('SAML SP flow (locally signed assertions)', () => {
       const { id, relay } = await startLogin(`?relay=${encodeURIComponent(evil)}`);
       const res = await post(buildResponse({ inResponseTo: id }), relay);
       expect(res.headers.location).toBe('/');
-      getDb().prepare("DELETE FROM users WHERE source='saml'").run();
+      (await sqlDb().prepare("DELETE FROM users WHERE source='saml'").run());
     }
   });
   it('enforces IdP-side MFA for roles that require it (administrators by default)', async () => {
@@ -136,20 +137,20 @@ describe('SAML SP flow (locally signed assertions)', () => {
   it('MFA policy is not applied to roles that do not require it, but is when required for everyone', async () => {
     let { id, relay } = await startLogin();
     expect((await post(buildResponse({ inResponseTo: id }), relay)).status).toBe(302); // developer, no MFA needed
-    saveSettings('security', { ...getSettings('security'), requireMfaEveryone: true });
+    await saveSettings('security', { ...getSettings('security'), requireMfaEveryone: true });
     ({ id, relay } = await startLogin());
     expect((await post(buildResponse({ inResponseTo: id }), relay)).status).toBe(403);
   });
   it('test-login dry run shows attributes without creating a session or user', async () => {
     const { login } = await import('./helpers.js');
-    const admin = login(app, { username: 'samladmin', roles: ['administrator'] });
+    const admin = await login(app, { username: 'samladmin', roles: ['administrator'] });
     const res = await request(app).get('/auth/saml/login?test=1').set('Cookie', admin.cookie);
     const url = new URL(res.headers.location);
     const id = /ID="([^"]+)"/.exec(zlib.inflateRawSync(Buffer.from(url.searchParams.get('SAMLRequest'), 'base64')).toString())[1];
     const out = await post(buildResponse({ inResponseTo: id }), url.searchParams.get('RelayState'));
     expect(out.status).toBe(200); expect(out.text).toContain('no session created'); expect(out.text).toContain('ann@example.com');
     expect(out.headers['set-cookie']).toBeUndefined();
-    expect(getDb().prepare("SELECT COUNT(*) c FROM users WHERE source='saml'").get().c).toBe(0);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM users WHERE source='saml'").get()).c).toBe(0);
     expect((await request(app).get('/auth/saml/login?test=1')).status).toBe(401); // anonymous cannot start a test
   });
 });

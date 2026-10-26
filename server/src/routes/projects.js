@@ -102,7 +102,7 @@ export function projectsRouter() {
     const { name } = validate(z.object({ name: z.string().min(1).max(64) }), req.body);
     const dir = createDir(req.user.id, name);
     const id = await insert(req.user.id, name, dir);
-    audit(req.user.id, 'project.create', name);
+    await audit(req.user.id, 'project.create', name);
     res.status(201).json({ id, name });
   });
 
@@ -124,7 +124,7 @@ export function projectsRouter() {
       } else fail(400, 'source_required');
     } catch (e) { fs.rmSync(dir, { recursive: true, force: true }); throw e; }
     const id = await insert(req.user.id, b.name, dir);
-    audit(req.user.id, 'project.import', b.name, { source: b.gitUrl ? 'git' : 'zip' });
+    await audit(req.user.id, 'project.import', b.name, { source: b.gitUrl ? 'git' : 'zip' });
     res.status(201).json({ id, name: b.name });
   });
 
@@ -135,7 +135,7 @@ export function projectsRouter() {
     await getKnex()('projects').where({ id: p.id }).del();
     fs.rmSync(p.dir, { recursive: true, force: true });
     fs.rmSync(path.join(config.dataDir, 'checkpoints', `${p.id}.git`), { recursive: true, force: true });
-    audit(req.user.id, 'project.delete', p.name);
+    await audit(req.user.id, 'project.delete', p.name);
     res.json({ ok: true });
   });
 
@@ -212,7 +212,7 @@ export function projectsRouter() {
     if (fs.existsSync(abs)) { if (fs.statSync(abs).isDirectory()) fail(409, 'exists_directory'); if (req.query.overwrite !== '1') fail(409, 'exists'); }
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, req.body);
-    audit(req.user.id, 'file.upload', p.name, { path: relFrom(p.dir, abs), bytes: req.body.length });
+    await audit(req.user.id, 'file.upload', p.name, { path: relFrom(p.dir, abs), bytes: req.body.length });
     res.status(201).json({ ok: true, path: relFrom(p.dir, abs), bytes: req.body.length });
   });
 
@@ -231,7 +231,7 @@ export function projectsRouter() {
     const dir = rel ? jail(p, rel) : p.dir;
     let st; try { st = fs.statSync(dir); } catch { fail(404, 'not_found'); }
     if (!st.isDirectory()) fail(400, 'not_a_directory');
-    audit(req.user.id, 'project.download', p.name, rel ? { path: rel } : {});
+    await audit(req.user.id, 'project.download', p.name, rel ? { path: rel } : {});
     sendZip(res, dir, rel ? path.basename(dir) : p.name, { ignore: ['node_modules/**'] });
   });
   // A single file, always as an attachment of an opaque type: project files are untrusted and must never be rendered on our origin.
@@ -260,7 +260,7 @@ export function projectsRouter() {
     await git.addConfig('user.name', name, false, 'local'); await git.addConfig('user.email', email, false, 'local');
     await git.add('-A');
     const out = await git.commit(b.message).catch((e) => fail(400, 'commit_failed', { message: String(e.message).slice(0, 200) }));
-    audit(req.user.id, 'git.commit', p.name, { commit: out.commit });
+    await audit(req.user.id, 'git.commit', p.name, { commit: out.commit });
     res.json({ commit: out.commit, summary: out.summary });
   });
   route.post('/projects/:id/git/push', 'git.push', async (req, res) => {
@@ -269,7 +269,7 @@ export function projectsRouter() {
     // Token is supplied per-request via an HTTP header and never persisted or written to .git/config.
     const git = safeGit(p.dir, { token: b.token });
     const out = await git.raw(['push', b.remoteUrl, `HEAD:refs/heads/${b.branch}`]).catch((e) => fail(400, 'push_failed', { message: String(e.message).replace(b.token || '\0', '***').slice(0, 300) }));
-    audit(req.user.id, 'git.push', p.name, { remote: b.remoteUrl, branch: b.branch });
+    await audit(req.user.id, 'git.push', p.name, { remote: b.remoteUrl, branch: b.branch });
     res.json({ ok: true, output: out.slice(0, 500) });
   });
 
@@ -283,7 +283,7 @@ export function projectsRouter() {
     if (isTurnActive(p.id)) fail(409, 'agent_running');
     const cp = await createCheckpoint(p.id, p.dir, { label, author: 'user' });
     await recordCheckpointMarks(p.id, cp.id);
-    audit(req.user.id, 'checkpoint.create', p.name, { label });
+    await audit(req.user.id, 'checkpoint.create', p.name, { label });
     res.status(201).json(cp);
   });
   route.get('/projects/:id/checkpoints/:cp/diff', 'checkpoint.read', async (req, res) => {
@@ -301,7 +301,7 @@ export function projectsRouter() {
     await recordCheckpointMarks(p.id, out.before.id);
     const conversations = await rollBackMessages(req.params.cp);
     await copyCheckpointMarks(req.params.cp, out.after.id);
-    audit(req.user.id, 'checkpoint.restore', p.name, { to: req.params.cp });
+    await audit(req.user.id, 'checkpoint.restore', p.name, { to: req.params.cp });
     res.json({ ...out, conversations });
   });
 

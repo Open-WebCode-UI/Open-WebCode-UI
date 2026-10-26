@@ -1,6 +1,7 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login, addProvider, fakeAdapterFactory } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { resetRateLimits } from '../src/ratelimit.js';
 
 const BACKEND = { provider: 'brave', apiKey: 'k-test' };
@@ -27,10 +28,10 @@ async function turn(app, u, body) {
 let app, dev, admin, modelId, seen, script, search;
 async function setup(opts = {}) {
   const backend = 'backend' in opts ? opts.backend : BACKEND, s = opts.search ?? fakeSearch();
-  freshDb(); resetRateLimits(); modelId = addProvider(); seen = []; script = []; search = s;
+  await freshDb(); resetRateLimits(); modelId = await addProvider(); seen = []; script = []; search = s;
   app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen), webSearch: { backend, fetchImpl: search.fetchImpl } } });
-  dev = login(app, { username: 'devone' });
-  admin = login(app, { username: 'adminone', roles: ['administrator'] });
+  dev = await login(app, { username: 'devone' });
+  admin = await login(app, { username: 'adminone', roles: ['administrator'] });
 }
 const allow = (on = true) => admin.put('/api/admin/general').send({ webSearchAllowed: on });
 const chat = (extra = {}) => turn(app, dev, { __url: '/api/chat/turn', message: 'what is new in node?', modelId, ...extra });
@@ -49,7 +50,7 @@ describe('web search switches', () => {
     expect((await dev.put('/api/web-search/settings').send({ enabled: false })).body.enabled).toBe(false);
     expect((await dev.get('/api/web-search')).body.enabled).toBe(false);
     expect((await dev.put('/api/web-search/settings').send({ enabled: 'yes' })).status).toBe(400);
-    expect(getDb().prepare("SELECT 1 FROM audit WHERE action='websearch.toggle'").get()).toBeTruthy();
+    expect((await sqlDb().prepare("SELECT 1 FROM audit WHERE action='websearch.toggle'").get())).toBeTruthy();
   });
 
   it('offers no tool unless tenant, profile, and the chat itself are all on', async () => {
@@ -70,7 +71,7 @@ describe('web search switches', () => {
 
   it('is unavailable without the permission', async () => {
     await allow();
-    getDb().prepare("DELETE FROM role_permissions WHERE permission='websearch.use'").run();
+    (await sqlDb().prepare("DELETE FROM role_permissions WHERE permission='websearch.use'").run());
     const ev = await chat({ webSearch: true });
     expect(seen.at(-1).tools).toEqual([]);
     expect(ev.find((e) => e.type === 'notice').text).toMatch(/role does not allow/);
@@ -103,7 +104,7 @@ describe('web search tool', () => {
     expect(toolMsg.content).toMatch(/untrusted/);
     expect(toolMsg.content).toContain('https://nodejs.org/en/blog');
     expect(ev.filter((e) => e.type === 'text').map((e) => e.text).join('')).toBe('Node 24 is out.');
-    const audited = getDb().prepare("SELECT detail FROM audit WHERE action='websearch.query'").get();
+    const audited = (await sqlDb().prepare("SELECT detail FROM audit WHERE action='websearch.query'").get());
     expect(JSON.stringify(audited)).not.toContain('node release'); // queries are not logged, only their size
   });
 
@@ -141,8 +142,8 @@ describe('web search service settings (admin page)', () => {
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ provider: 'brave', url: '', allowPrivate: false, apiKeySet: true });
     expect(JSON.stringify((await admin.get('/api/admin/web-search')).body)).not.toContain('sk-secret');
-    expect(getDb().prepare("SELECT value FROM settings WHERE key='webSearch'").get().value).not.toContain('sk-secret');
-    expect(JSON.stringify(getDb().prepare("SELECT detail FROM audit WHERE action='settings.web_search.update'").all())).not.toContain('sk-secret');
+    expect((await sqlDb().prepare("SELECT value FROM settings WHERE key='webSearch'").get()).value).not.toContain('sk-secret');
+    expect(JSON.stringify((await sqlDb().prepare("SELECT detail FROM audit WHERE action='settings.web_search.update'").all()))).not.toContain('sk-secret');
   });
 
   it('keeps the stored key when none is sent, replaces it, and removes it on provider change', async () => {

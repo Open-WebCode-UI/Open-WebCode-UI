@@ -5,7 +5,7 @@ import { userPermissions } from '../auth/rbac.js';
 import { scopeOf, effectivePermissions } from '../courses/policy.js';
 
 // The user's permissions for one project: narrowed by the rules of a course exercise workspace, if it is one.
-const permsFor = async (userId, projectId) => { const base = userPermissions(userId), sc = await scopeOf(projectId); return sc ? effectivePermissions(base, sc) : base; };
+const permsFor = async (userId, projectId) => { const base = await userPermissions(userId), sc = await scopeOf(projectId); return sc ? effectivePermissions(base, sc) : base; };
 import { getSettings } from '../settings.js';
 import { audit } from '../audit.js';
 import { terminals as defaultManager } from './manager.js';
@@ -35,12 +35,12 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { sess, term }));
   });
 
-  wss.on('connection', (ws, _req, { sess, term }) => {
+  wss.on('connection', async (ws, _req, { sess, term }) => {
     const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
     send({ type: 'ready', kind: term.kind, cols: term.cols, rows: term.rows });
     // When the shell ends (it exited, was killed, or shell mode was switched off) close the socket too, so clients react at once.
     const detach = term.attach((m) => { send(m); if (m.type === 'exit') setTimeout(() => ws.close(1000, 'shell ended'), 30); });
-    if (term.kind === 'user') audit(sess.user.id, 'terminal.attach', String(term.projectId));
+    if (term.kind === 'user') await audit(sess.user.id, 'terminal.attach', String(term.projectId));
     ws.on('message', (raw) => {
       let m; try { m = JSON.parse(raw.toString()); } catch { return; }
       if (term.kind !== 'user') return; // the agent's terminal is read-only for viewers

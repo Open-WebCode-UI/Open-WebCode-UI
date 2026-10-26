@@ -19,8 +19,8 @@ export function profileRouter() {
     const displayName = `${b.firstName} ${b.lastName}`.trim();
     const k = getKnex();
     await k('users').where({ id: req.user.id }).update({ first_name: b.firstName, last_name: b.lastName, display_name: displayName });
-    audit(req.user.id, 'profile.account.update', null, { fields: ['firstName', 'lastName'] });
-    res.json({ user: userDto(await k('users').where({ id: req.user.id }).first(), { withPerms: true }) });
+    await audit(req.user.id, 'profile.account.update', null, { fields: ['firstName', 'lastName'] });
+    res.json({ user: await userDto(await k('users').where({ id: req.user.id }).first(), { withPerms: true }) });
   });
 
   route.get('/preferences', 'authenticated', (req, res) => res.json(readPreferences(req.user)));
@@ -30,7 +30,7 @@ export function profileRouter() {
     const patch = validate(prefSchema.partial(), req.body);
     const next = { ...readPreferences(req.user), ...patch };
     await getKnex()('users').where({ id: req.user.id }).update({ preferences: JSON.stringify(next) });
-    audit(req.user.id, 'profile.preferences.update', null, { fields: Object.keys(patch) });
+    await audit(req.user.id, 'profile.preferences.update', null, { fields: Object.keys(patch) });
     res.json(next);
   });
 

@@ -22,10 +22,10 @@ describe('crypto', () => {
   });
   it('safeEqual', () => { expect(safeEqual('a', 'a')).toBe(true); expect(safeEqual('a', 'ab')).toBe(false); });
   it('never returns provider secrets from the API', async () => {
-    freshDb();
+    await freshDb();
     const app = createApp();
-    const admin = login(app, { username: 'adm', roles: ['administrator'] });
-    addProvider();
+    const admin = await login(app, { username: 'adm', roles: ['administrator'] });
+    await addProvider();
     const res = await admin.get('/api/admin/providers');
     expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).not.toContain('"k"');

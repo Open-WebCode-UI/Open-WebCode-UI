@@ -48,10 +48,10 @@ function guard(access, opts, routePath = '') {
     if (req.user.must_change_password && !opts.allowPasswordChange) return res.status(403).json({ error: 'password_change_required' });
     if (access === 'authenticated') return next();
     const perm = typeof access === 'string' ? access : access.perm;
-    req.permissions = userPermissions(req.user.id);
+    req.permissions = await userPermissions(req.user.id);
     if (!req.permissions.has(perm)) return res.status(403).json({ error: 'forbidden', permission: perm });
     // A course exercise workspace may carry rules that take permissions away for that project only (see courses/policy.js).
-    const pid = projectOf(req, routePath);
+    const pid = await projectOf(req, routePath);
     const scope = pid === null ? null : await scopeOf(pid);
     if (scope?.denied.has(perm)) return res.status(403).json({ error: 'exercise_policy', permission: perm, reason: scope.submitted ? 'submitted' : scope.expired ? 'time_limit' : 'rules' });
     if (typeof access === 'object' && access.stepup && !stepupOk(req)) {

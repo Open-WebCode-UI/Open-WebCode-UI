@@ -1,8 +1,9 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { freshDb, createApp, login, addProvider, fakeAdapterFactory, tmpDir } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { config } from '../src/config.js';
 import { parseResult, resultText } from '../src/mcp/client.js';
 import { saveGenerated, getOwned, hydrator } from '../src/attachments.js';
@@ -42,17 +43,17 @@ describe('MCP result parsing', () => {
 
 describe('stored tool media', () => {
   let user, conv;
-  beforeEach(() => {
-    freshDb();
-    const db = getDb();
-    user = Number(db.prepare("INSERT INTO users (source, username) VALUES ('local', 'mia')").run().lastInsertRowid);
-    conv = Number(db.prepare("INSERT INTO conversations (user_id, kind, title) VALUES (?, 'agent', 't')").run(user).lastInsertRowid);
+  beforeEach(async () => {
+    await freshDb();
+    const db = sqlDb();
+    user = Number((await db.prepare("INSERT INTO users (source, username) VALUES ('local', 'mia')").run()).lastInsertRowid);
+    conv = Number((await db.prepare("INSERT INTO conversations (user_id, kind, title) VALUES (?, 'agent', 't')").run(user)).lastInsertRowid);
   });
 
   it('saveGenerated sniffs the bytes, names the file, binds it to the conversation and enforces the size cap', async () => {
     const a = await saveGenerated(user, conv, 'render-1', PNG, { maxBytes: 1000 });
     expect(a).toMatchObject({ kind: 'image', mime: 'image/png', name: 'render-1.png' });
-    expect(getDb().prepare('SELECT conversation_id c FROM attachments WHERE id=?').get(a.id).c).toBe(conv);
+    expect((await sqlDb().prepare('SELECT conversation_id c FROM attachments WHERE id=?').get(a.id)).c).toBe(conv);
     expect(await saveGenerated(user, conv, 'clip', WAV, { maxBytes: 1000 })).toMatchObject({ kind: 'audio', name: 'clip.wav' });
     expect(await saveGenerated(user, conv, 'x', PNG, { maxBytes: 10 })).toBeNull();                        // too large
     expect(await saveGenerated(user, conv, 'x', Buffer.from('plain text'), { maxBytes: 1000 })).toBeNull(); // not media
@@ -85,11 +86,11 @@ describe('MCP tool calls that return media', () => {
     },
     ...over,
   });
-  beforeEach(() => {
-    freshDb(); root = tmpDir('proj-');
-    const db = getDb();
-    user = Number(db.prepare("INSERT INTO users (source, username) VALUES ('local', 'mia')").run().lastInsertRowid);
-    conv = Number(db.prepare("INSERT INTO conversations (user_id, kind, title) VALUES (?, 'agent', 't')").run(user).lastInsertRowid);
+  beforeEach(async () => {
+    await freshDb(); root = tmpDir('proj-');
+    const db = sqlDb();
+    user = Number((await db.prepare("INSERT INTO users (source, username) VALUES ('local', 'mia')").run()).lastInsertRowid);
+    conv = Number((await db.prepare("INSERT INTO conversations (user_id, kind, title) VALUES (?, 'agent', 't')").run(user)).lastInsertRowid);
   });
 
   it('keeps the image as an attachment and names it in the result', async () => {
@@ -183,16 +184,16 @@ describe('end to end: an MCP server returns an image', () => {
     return { status: res.status, events };
   }
   beforeEach(async () => {
-    freshDb(); modelId = addProvider(); seen = []; script = [];
+    await freshDb(); modelId = await addProvider(); seen = []; script = [];
     app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen), mcp: { fetchImpl, lookup: publicLookup } } });
-    dev = login(app, { username: 'devone' });
-    admin = login(app, { username: 'adminone', roles: ['administrator'] });
+    dev = await login(app, { username: 'devone' });
+    admin = await login(app, { username: 'adminone', roles: ['administrator'] });
     proj = (await dev.post('/api/projects').send({ name: 'p1' })).body;
     await admin.post('/api/admin/mcp-servers').send({ name: 'd', url: 'https://mcp.example.com/mcp' });
   });
 
   it('with image support: stored, sent to the model, shown in the UI, readable only by its owner; history keeps no bytes', async () => {
-    getDb().prepare('UPDATE models SET image_uploads=1').run();
+    (await sqlDb().prepare('UPDATE models SET image_uploads=1').run());
     script.push([{ type: 'tool_call', id: 'c1', name: 'mcp__d__render', args: {} }], [{ type: 'text', text: 'nice' }]);
     const r = await turn({ projectId: proj.id, message: 'chart it', mode: 'plan', modelId });
     expect(r.status).toBe(200);
@@ -204,7 +205,7 @@ describe('end to end: an MCP server returns an image', () => {
     const toolMsg = seen[1].messages.find((m) => m.role === 'tool');
     expect(toolMsg.files).toHaveLength(1); expect(Buffer.from(toolMsg.files[0].data).equals(PNG)).toBe(true);
     // persisted history holds a reference only
-    const stored = getDb().prepare("SELECT content FROM messages WHERE role='tool'").get().content;
+    const stored = (await sqlDb().prepare("SELECT content FROM messages WHERE role='tool'").get()).content;
     expect(JSON.parse(stored).attachments[0].id).toBe(id); expect(stored).not.toContain('files'); expect(stored.length).toBeLessThan(1000);
     // the session timeline carries it for the UI
     const cid = r.events.find((e) => e.type === 'start').conversationId;
@@ -215,7 +216,7 @@ describe('end to end: an MCP server returns an image', () => {
     expect(got.status).toBe(200); expect(got.headers['content-type']).toBe('image/png');
     expect(got.headers['x-content-type-options']).toBe('nosniff'); expect(got.headers['content-security-policy']).toBe('sandbox');
     expect(got.headers['content-disposition']).toMatch(/^inline/); expect(got.body.equals(PNG)).toBe(true);
-    expect((await login(app, { username: 'devtwo' }).get(`/api/attachments/${id}`)).status).toBe(404);
+    expect((await (await login(app, { username: 'devtwo' })).get(`/api/attachments/${id}`)).status).toBe(404);
     expect((await dev.get(`/api/attachments/${'0'.repeat(32)}`)).status).toBe(404);
     expect((await dev.get('/api/attachments/not-an-id')).status).toBe(404);
     // deleting the conversation removes the file
@@ -230,7 +231,7 @@ describe('end to end: an MCP server returns an image', () => {
     const r = await turn({ projectId: proj.id, message: 'chart it', mode: 'plan', modelId });
     const res = r.events.find((e) => e.type === 'tool_result');
     expect(res.result).toBe('a chart\n[image content omitted]'); expect(res.attachments).toBeUndefined();
-    expect(getDb().prepare('SELECT COUNT(*) c FROM attachments').get().c).toBe(0);
+    expect((await sqlDb().prepare('SELECT COUNT(*) c FROM attachments').get()).c).toBe(0);
   });
 });
 
@@ -313,9 +314,9 @@ describe('images the model itself generates (Gemini image output)', () => {
     }
     const bytes = async (r) => r.buffer(true).parse((res, cb) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
     beforeEach(async () => {
-      freshDb(); modelId = addProvider(); seen = []; script = [];
+      await freshDb(); modelId = await addProvider(); seen = []; script = [];
       app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } });
-      dev = login(app, { username: 'devone' });
+      dev = await login(app, { username: 'devone' });
       proj = (await dev.post('/api/projects').send({ name: 'p1' })).body;
     });
 
@@ -325,7 +326,7 @@ describe('images the model itself generates (Gemini image output)', () => {
       const ev = r.events.find((e) => e.type === 'media');
       expect(ev.attachments).toHaveLength(1); expect(ev.attachments[0]).toMatchObject({ kind: 'image', mime: 'image/png', name: 'generated-1.png' });
       const id = ev.attachments[0].id;
-      const stored = JSON.parse(getDb().prepare("SELECT content FROM messages WHERE role='assistant'").get().content);
+      const stored = JSON.parse((await sqlDb().prepare("SELECT content FROM messages WHERE role='assistant'").get()).content);
       expect(stored.attachments[0].id).toBe(id); expect(stored.content).toBe('Here is your banana');
       const cid = r.events.find((e) => e.type === 'start').conversationId;
       const items = (await dev.get(`/api/sessions/${cid}`)).body.items;
@@ -355,7 +356,7 @@ describe('images the model itself generates (Gemini image output)', () => {
       const shown = Object.assign(new Error('Gemini returned no image or text (finish reason IMAGE_SAFETY).'), { userMessage: true });
       for (const [err, want] of [[shown, 'Gemini returned no image or text (finish reason IMAGE_SAFETY).'], [new Error('400 secret upstream detail'), 'The model request failed.']]) {
         app = createApp({ deps: { adapterFactory: failing(err) } });
-        dev = login(app, { username: `u${Math.random().toString(36).slice(2, 8)}` });
+        dev = await login(app, { username: `u${Math.random().toString(36).slice(2, 8)}` });
         const r = await turn({ message: 'draw', modelId, chatType: 'general' }, '/api/chat/turn');
         expect(r.events.find((e) => e.type === 'error').message).toBe(want);
       }
@@ -366,7 +367,7 @@ describe('images the model itself generates (Gemini image output)', () => {
       const r = await turn({ projectId: proj.id, message: 'draw', mode: 'plan', modelId });
       expect(r.events.some((e) => e.type === 'media')).toBe(false);
       expect(r.events.find((e) => e.type === 'notice').text).toMatch(/could not be shown/);
-      expect(getDb().prepare('SELECT COUNT(*) c FROM attachments').get().c).toBe(0);
+      expect((await sqlDb().prepare('SELECT COUNT(*) c FROM attachments').get()).c).toBe(0);
     });
   });
 });

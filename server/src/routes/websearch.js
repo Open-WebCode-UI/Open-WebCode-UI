@@ -14,7 +14,7 @@ export function webSearchRouter({ deps = {} } = {}) {
   route.put('/web-search/settings', 'websearch.use', async (req, res) => {
     const { enabled } = validate(z.object({ enabled: z.boolean() }).strict(), req.body);
     await setUserWebSearch(req.user.id, enabled);
-    audit(req.user.id, 'websearch.toggle', null, { enabled });
+    await audit(req.user.id, 'websearch.toggle', null, { enabled });
     res.json({ allowed: webSearchAllowed(), configured: webSearchConfigured(deps.backend), enabled });
   });
   return r;

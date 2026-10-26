@@ -31,18 +31,17 @@ import { attachmentsRouter } from './routes/attachments.js';
 import { coursesRouter } from './routes/courses.js';
 import { coursesEnabled } from './settings.js';
 import { assessmentsRouter } from './routes/assessments.js';
-import { getDb } from './db/index.js';
+import { getKnex } from './db/index.js';
 import { createLocalUser } from './users.js';
 import { randomToken } from './crypto.js';
 import { audit } from './audit.js';
 import { isLocalHost } from './tls.js';
 
-export function bootstrap() {
-  const db = getDb();
-  if (db.prepare('SELECT COUNT(*) c FROM users').get().c > 0) return null;
+export async function bootstrap() {
+  if ((await getKnex()('users').count({ c: '*' }).first()).c > 0) return null;
   const password = config.breakGlassPassword || randomToken(15);
-  createLocalUser({ username: 'breakglass', password, roles: ['administrator'], isBreakGlass: true, mustChange: !config.breakGlassPassword });
-  audit(null, 'bootstrap.breakglass_created', 'breakglass');
+  await createLocalUser({ username: 'breakglass', password, roles: ['administrator'], isBreakGlass: true, mustChange: !config.breakGlassPassword });
+  await audit(null, 'bootstrap.breakglass_created', 'breakglass');
   return config.breakGlassPassword ? null : password;
 }
 

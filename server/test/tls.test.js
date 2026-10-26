@@ -1,3 +1,4 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import https from 'node:https';
 import { X509Certificate } from 'node:crypto';
 import { resolveTls, createServer, isLocalHost, tlsManagement, effectiveBaseUrl, setTlsRuntime } from '../src/tls.js';
 import { freshDb, createApp, tmpDir, login } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { config } from '../src/config.js';
 
 const saved = { baseUrl: config.baseUrl };
@@ -45,10 +46,10 @@ describe('HTTPS for localhost', () => {
     await expect(resolveTls({ baseUrl: 'https://x.test', dataDir: dir, env: { TLS_CERT: 'a' } })).rejects.toThrow(/both/);
   });
   it('serves the API over HTTPS with secure cookies, no HSTS pin on localhost, and the CSP upgrade directive', async () => {
-    freshDb();
+    await freshDb();
     config.baseUrl = 'https://localhost:3000';
     const tls = await resolveTls({ baseUrl: config.baseUrl, dataDir: tmpDir('tls-'), env: {} });
-    const server = createServer(createApp(), tls);
+    const server = await createServer(createApp(), tls);
     await new Promise((r) => server.listen(0, r));
     try {
       const { res, body } = await get(server.address().port, tls.cert);
@@ -60,7 +61,7 @@ describe('HTTPS for localhost', () => {
     } finally { server.close(); }
   });
   it('does not send upgrade-insecure-requests over plain http, and uses HSTS only for real https hosts', async () => {
-    freshDb();
+    await freshDb();
     config.baseUrl = 'http://localhost:3000';
     const { default: request } = await import('supertest');
     const plain = await request(createApp()).get('/api/public-config');
@@ -103,12 +104,12 @@ describe('administrator-chosen HTTPS', () => {
 });
 
 describe('admin HTTPS API', () => {
-  const setup = () => {
-    freshDb(); config.baseUrl = 'http://code.example.com:3000'; setTlsRuntime({ https: false, source: null, managedBy: 'admin', cert: null });
+  const setup = async () => {
+    await freshDb(); config.baseUrl = 'http://code.example.com:3000'; setTlsRuntime({ https: false, source: null, managedBy: 'admin', cert: null });
     return login(createApp(), { username: 'adm', roles: ['administrator'] });
   };
   it('asks for a choice when nothing is configured, then saves self-signed with a certificate and flags a restart', async () => {
-    const a = setup();
+    const a = await setup();
     const first = (await a.get('/api/admin/tls')).body;
     expect(first).toMatchObject({ managedBy: 'admin', mode: 'unset', needsChoice: true, restartRequired: false, certificate: null });
     const r = await a.put('/api/admin/tls').send({ mode: 'self-signed' });
@@ -119,19 +120,19 @@ describe('admin HTTPS API', () => {
     const fp = r.body.pendingCertificate.fingerprint;
     const re = await a.post('/api/admin/tls/regenerate').send({});
     expect(re.body.pendingCertificate.fingerprint).not.toBe(fp);
-    expect(getDb().prepare("SELECT 1 FROM audit WHERE action='settings.tls.update'").get()).toBeTruthy();
+    expect((await sqlDb().prepare("SELECT 1 FROM audit WHERE action='settings.tls.update'").get())).toBeTruthy();
   });
   it('choosing no HTTPS needs no restart while plain HTTP is running', async () => {
-    const a = setup();
+    const a = await setup();
     const r = await a.put('/api/admin/tls').send({ mode: 'none' });
     expect(r.body).toMatchObject({ mode: 'none', needsChoice: false, restartRequired: false });
     expect((await a.post('/api/admin/tls/regenerate').send({})).status).toBe(400);
   });
   it('rejects bad input, non-writers, and changes when the environment or a proxy decides', async () => {
-    const a = setup();
+    const a = await setup();
     expect((await a.put('/api/admin/tls').send({ mode: 'unset' })).status).toBe(400);
     expect((await a.put('/api/admin/tls').send({ mode: 'custom' })).status).toBe(400);
-    const dev = login(createApp(), { username: 'dev1', roles: ['developer'] });
+    const dev = await login(createApp(), { username: 'dev1', roles: ['developer'] });
     expect((await dev.put('/api/admin/tls').send({ mode: 'none' })).status).toBe(403);
     process.env.TRUST_PROXY = '1'; // a reverse proxy terminates TLS
     try {

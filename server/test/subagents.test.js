@@ -1,3 +1,4 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { createSubagentRuntime, MAX_SUBAGENTS_PER_TURN } from '../src/agent/suba
 import { DEFAULT_PLAN_PROMPT, DEFAULT_ACT_PROMPT, DEFAULT_SUBAGENT_PROMPT } from '../src/agent/prompts.js';
 import { listCheckpoints } from '../src/workspace/checkpoints.js';
 import { freshDb, createApp, login, addProvider, makeRole, tmpDir } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const call = (name, args, id) => ({ type: 'tool_call', id: id || `${name}-${Math.random().toString(36).slice(2, 7)}`, name, args });
@@ -166,12 +167,12 @@ describe('parallelism', () => {
 
 describe('model support is configurable', () => {
   it('administrators can turn subagents off per model without disturbing other settings, and the agent endpoint honors it', async () => {
-    freshDb(); const modelId = addProvider();
+    await freshDb(); const modelId = await addProvider();
     const seen = [];
     const factory = () => ({ async *stream(args) { seen.push(args.tools.map((t) => t.name)); yield { type: 'text', text: 'hi' }; yield { type: 'done' }; } });
     const app = createApp({ deps: { adapterFactory: factory } });
-    const admin = login(app, { username: 'rootadmin', roles: ['administrator'] });
-    const pid = getDb().prepare('SELECT provider_id p FROM models WHERE id=?').get(modelId).p;
+    const admin = await login(app, { username: 'rootadmin', roles: ['administrator'] });
+    const pid = (await sqlDb().prepare('SELECT provider_id p FROM models WHERE id=?').get(modelId)).p;
     const listed = (await admin.get('/api/admin/providers')).body[0].models[0]; expect(listed.subagents).toBe(true);
     const turn = async () => { const p = (await admin.get('/api/projects')).body[0] || (await admin.post('/api/projects').send({ name: 'sa' })).body; await admin.post('/api/agent/turn').send({ projectId: p.id, message: 'x', mode: 'plan', modelId }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); }); };
     await turn(); expect(seen.at(-1)).toContain('spawn_agent');

@@ -23,7 +23,7 @@ async function apiAuth(req, res, next) {
   const found = m && await lookupKey(m[1]);
   if (!found) return bad();
   // Permission is read on every call, so taking api.use away from a role stops its members' keys at once.
-  if (!userPermissions(found.user.id).has('api.use')) return apiError(res, 403, 'The key owner is not allowed to use the API.', 'permission_error', 'forbidden');
+  if (!(await userPermissions(found.user.id)).has('api.use')) return apiError(res, 403, 'The key owner is not allowed to use the API.', 'permission_error', 'forbidden');
   if (!hit(`apikey:${found.key.id}`, s.rateLimitPerMin, 60_000)) { res.set('Retry-After', '60'); return apiError(res, 429, 'Rate limit exceeded for this key.', 'rate_limit_error', 'rate_limited'); }
   await touchKey(found.key);
   req.apiKey = found.key; req.apiUser = found.user;
@@ -32,7 +32,7 @@ async function apiAuth(req, res, next) {
 
 // Models this key may call: enabled connection + enabled model + the connection's role allow-list + the key's own restriction.
 async function usableModels(user, key) {
-  const roles = userRoleNames(user.id), only = key.model_ids ? JSON.parse(key.model_ids) : null;
+  const roles = await userRoleNames(user.id), only = key.model_ids ? JSON.parse(key.model_ids) : null;
   return (await getKnex()('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.enabled': 1, 'p.enabled': 1 })
     .orderBy([{ column: 'p.position' }, { column: 'p.id' }, { column: 'm.position' }, { column: 'm.id' }]).select('m.id', 'm.model_id', 'p.name as provider', 'p.allowed_roles as ar'))
     .filter((m) => (!only || only.includes(m.id)) && (() => { const ar = JSON.parse(m.ar); return !ar.length || ar.some((x) => roles.includes(x)); })());

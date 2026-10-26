@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
 
 let app, u;
-beforeEach(() => { freshDb(); app = createApp(); u = login(app, { username: 'dee' }); });
+beforeEach(async () => { await freshDb(); app = createApp(); u = await login(app, { username: 'dee' }); });
 
 describe('GET /api/agent/status (Platform status pane)', () => {
   it('returns the same facts as /status, with the project when one is given', async () => {
@@ -21,7 +21,7 @@ describe('GET /api/agent/status (Platform status pane)', () => {
   });
   it('needs a signed-in user with agent access', async () => {
     expect((await (await import('./helpers.js')).request(app).get('/api/agent/status')).status).toBe(401);
-    const none = login(app, { username: 'viewer', roles: [] });
+    const none = await login(app, { username: 'viewer', roles: [] });
     expect((await none.get('/api/agent/status')).status).toBe(403);
   });
 });

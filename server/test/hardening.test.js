@@ -1,10 +1,11 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import AdmZip from 'adm-zip';
 import { freshDb, createApp, login, tmpDir } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { getSettings } from '../src/settings.js';
 import { resolveForWrite, isGitPath, JailError } from '../src/workspace/jail.js';
 import { safeGit } from '../src/workspace/git.js';
@@ -12,8 +13,8 @@ import { executeTool } from '../src/agent/tools.js';
 import { extractZipSafely } from '../src/routes/projects.js';
 
 let app, u;
-const dirOf = (id) => getDb().prepare('SELECT dir FROM projects WHERE id=?').get(id).dir;
-beforeEach(() => { freshDb(); app = createApp(); u = login(app, { username: 'hardener' }); });
+const dirOf = async (id) => (await sqlDb().prepare('SELECT dir FROM projects WHERE id=?').get(id)).dir;
+beforeEach(async () => { await freshDb(); app = createApp(); u = await login(app, { username: 'hardener' }); });
 
 describe('.git is not writable through file APIs', () => {
   it('isGitPath matches any segment, case-insensitively', () => {
@@ -28,7 +29,7 @@ describe('.git is not writable through file APIs', () => {
   });
   it('write, mkdir, rename, upload, and delete are all refused under .git; reads are still allowed', async () => {
     const p = (await u.post('/api/projects').send({ name: 'g1' })).body, id = p.id;
-    fs.mkdirSync(path.join(dirOf(id), '.git')); fs.writeFileSync(path.join(dirOf(id), '.git/config'), '[core]\n');
+    fs.mkdirSync(path.join(await dirOf(id), '.git')); fs.writeFileSync(path.join(await dirOf(id), '.git/config'), '[core]\n');
     await u.put(`/api/projects/${id}/file`).send({ path: 'a.txt', content: 'x' });
     expect((await u.put(`/api/projects/${id}/file`).send({ path: '.git/config', content: '[core]\nfsmonitor = touch x' })).status).toBe(400);
     expect((await u.put(`/api/projects/${id}/file`).send({ path: '.GIT/config', content: 'x' })).status).toBe(400);
@@ -37,7 +38,7 @@ describe('.git is not writable through file APIs', () => {
     expect((await u.post(`/api/projects/${id}/rename`).send({ from: '.git/config', to: 'c.txt' })).status).toBe(400);
     expect((await u.put(`/api/projects/${id}/upload?path=.git/config&overwrite=1`).set('content-type', 'application/octet-stream').send(Buffer.from('x'))).status).toBe(400);
     expect((await u.del(`/api/projects/${id}/file?path=.git/config`)).status).toBe(400);
-    expect(fs.readFileSync(path.join(dirOf(id), '.git/config'), 'utf8')).toBe('[core]\n');
+    expect(fs.readFileSync(path.join(await dirOf(id), '.git/config'), 'utf8')).toBe('[core]\n');
     expect((await u.get(`/api/projects/${id}/file?path=.git/config`)).status).toBe(200);
   });
   it('the agent file tools cannot modify .git', async () => {
@@ -78,22 +79,22 @@ describe('server-side git ignores a poisoned repository config', () => {
 
 describe('general settings: execution-affecting changes need step-up', () => {
   let admin;
-  beforeEach(() => { admin = login(app, { username: 'setadmin', roles: ['administrator'] }); });
-  const stale = () => getDb().prepare('UPDATE sessions SET stepup_at=0').run();
+  beforeEach(async () => { admin = await login(app, { username: 'setadmin', roles: ['administrator'] }); });
+  const stale = async () => (await sqlDb().prepare('UPDATE sessions SET stepup_at=0').run());
   it('cannot change execMode through the generic route, even with fresh step-up', async () => {
     const r = await admin.put('/api/admin/general').send({ execMode: 'workspace_shell' });
     expect(r.status).toBe(400); expect(r.body.error).toBe('use_exec_mode_endpoint');
     expect(getSettings('general').execMode).toBe('files_only');
   });
   it('shell limits and secret globs need step-up only when they change', async () => {
-    stale();
+    await stale();
     const before = getSettings('general');
     expect((await admin.put('/api/admin/general').send({ ...before, appName: 'Renamed' })).status).toBe(200); // unchanged risky fields re-sent
     const r = await admin.put('/api/admin/general').send({ secretGlobs: [] });
     expect(r.status).toBe(403); expect(r.body).toMatchObject({ error: 'mfa_required', stepup: true });
     expect((await admin.put('/api/admin/general').send({ shellTimeoutSec: 600 })).status).toBe(403);
     expect(getSettings('general').secretGlobs).toEqual(before.secretGlobs);
-    getDb().prepare('UPDATE sessions SET stepup_at=?').run(Math.floor(Date.now() / 1000));
+    (await sqlDb().prepare('UPDATE sessions SET stepup_at=?').run(Math.floor(Date.now() / 1000)));
     expect((await admin.put('/api/admin/general').send({ secretGlobs: ['.env'] })).status).toBe(200);
   });
 });
@@ -119,7 +120,7 @@ describe('agent search', () => {
     const root = tmpDir('s3-'); fs.writeFileSync(path.join(root, 'a.txt'), 'hello world\n'); fs.writeFileSync(path.join(root, '.env'), 'hello secret\n');
     const deep = path.join(root, ...Array(25).fill('d')); fs.mkdirSync(deep, { recursive: true }); fs.writeFileSync(path.join(deep, 'x.txt'), 'hello deep\n');
     expect(await executeTool('search', { pattern: 'hello' }, ctxFor(root))).toBe('a.txt:1: hello world');
-    expect(await executeTool('search', { pattern: '(' }, ctxFor(root))).toMatch(/invalid regular expression/);
+    expect((await executeTool('search', { pattern: '(' }, ctxFor(root)))).toMatch(/invalid regular expression/);
     expect(await executeTool('search', { pattern: 'a'.repeat(1001) }, ctxFor(root))).toMatch(/too long/);
     expect(await executeTool('search', { pattern: 'x', path: 'nope' }, ctxFor(root))).toMatch(/^Error:/);
   });

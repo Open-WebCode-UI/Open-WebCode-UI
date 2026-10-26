@@ -27,7 +27,7 @@ export function kernelRouter({ manager = kernels } = {}) {
     const b = validate(Body.extend({ code: z.string().max(200_000) }), req.body);
     const { p, file, cwd } = await target(req, b);
     let k; try { k = manager.create(req.user.id, p.id, file, cwd); } catch (e) { if (e.status === 429) fail(429, 'too_many_kernels'); throw e; }
-    audit(req.user.id, 'kernel.run', p.name, { path: file });
+    await audit(req.user.id, 'kernel.run', p.name, { path: file });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     const send = (ev) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`); };
     // A client that goes away mid-run must not leave the cell running unseen.
@@ -40,7 +40,7 @@ export function kernelRouter({ manager = kernels } = {}) {
   });
   route.post('/terminal/kernel/restart', 'terminal.use', async (req, res) => {
     const b = validate(Body, req.body); const { p, file } = await target(req, b);
-    manager.restart(req.user.id, p.id, file); audit(req.user.id, 'kernel.restart', p.name, { path: file });
+    manager.restart(req.user.id, p.id, file); await audit(req.user.id, 'kernel.restart', p.name, { path: file });
     res.json({ ok: true });
   });
   return r;

@@ -1,6 +1,7 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { getSettings, saveSettings, NAMEID, defaults } from '../src/settings.js';
 import { extractGroups, resolveIdentity, upsertSamlUser, syncRolesFromGroups, checkSamlMfa, parseAuthnStatement } from '../src/auth/saml-identity.js';
 import { parseIdpMetadata, loadIdpMetadata } from '../src/auth/idp-metadata.js';
@@ -8,7 +9,7 @@ import { assertSafeUrl, isPrivateIp, safeFetchText } from '../src/net-guard.js';
 import { metadataXml } from './fixtures/idp-metadata.js';
 
 const cfg = () => ({ ...defaults.saml });
-beforeEach(() => freshDb());
+beforeEach(async () => { await freshDb(); });
 
 describe('group extraction', () => {
   it('handles string, array, custom attribute name, and the `groups` fallback', () => {
@@ -36,7 +37,7 @@ describe('identity: NameID is opaque; email/first/last come from attributes', ()
     const u1 = await upsertSamlUser('idp', a);
     const u2 = await upsertSamlUser('idp', resolveIdentity({ nameID: 'n1', attributes: { ...attrs, email: 'new@b.com', lastName: 'Kim' } }, cfg()));
     expect(u2).toBe(u1);
-    expect(getDb().prepare('SELECT email, last_name FROM users WHERE id=?').get(u1)).toEqual({ email: 'new@b.com', last_name: 'Kim' });
+    expect((await sqlDb().prepare('SELECT email, last_name FROM users WHERE id=?').get(u1))).toEqual({ email: 'new@b.com', last_name: 'Kim' });
     expect(await upsertSamlUser('other-idp', a)).not.toBe(u1);
   });
   it('resolves common claim URIs / aliases and admin-custom attribute names', () => {
@@ -69,10 +70,10 @@ describe('identity: NameID is opaque; email/first/last come from attributes', ()
 
 describe('group -> role mapping', () => {
   it('maps groups to roles, re-syncs on every login, and falls back to default role', async () => {
-    const dev = getDb().prepare("SELECT id FROM roles WHERE name='developer'").get().id;
-    const adm = getDb().prepare("SELECT id FROM roles WHERE name='administrator'").get().id;
-    getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('devs', dev);
-    getDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('Admins', adm);
+    const dev = (await sqlDb().prepare("SELECT id FROM roles WHERE name='developer'").get()).id;
+    const adm = (await sqlDb().prepare("SELECT id FROM roles WHERE name='administrator'").get()).id;
+    (await sqlDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('devs', dev));
+    (await sqlDb().prepare('INSERT INTO group_role_map VALUES (?,?)').run('Admins', adm));
     const uid = await upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
     expect((await syncRolesFromGroups(uid, ['devs', 'Admins'], cfg())).sort()).toEqual(['administrator', 'developer']);
     expect(await syncRolesFromGroups(uid, ['devs'], cfg())).toEqual(['developer']); // removed group drops the role
@@ -80,11 +81,11 @@ describe('group -> role mapping', () => {
     expect(await syncRolesFromGroups(uid, ['nothing'], { ...cfg(), defaultRoleId: dev })).toEqual(['developer']);
   });
   it('does not touch manually assigned roles', async () => {
-    const dev = getDb().prepare("SELECT id FROM roles WHERE name='developer'").get().id;
+    const dev = (await sqlDb().prepare("SELECT id FROM roles WHERE name='developer'").get()).id;
     const uid = await upsertSamlUser('idp', { uniqueId: 'n', email: 'a@b.com', firstName: 'A', lastName: 'B', displayName: 'A B' });
-    getDb().prepare("INSERT INTO user_roles VALUES (?,?,'manual')").run(uid, dev);
+    (await sqlDb().prepare("INSERT INTO user_roles VALUES (?,?,'manual')").run(uid, dev));
     await syncRolesFromGroups(uid, [], cfg());
-    expect(getDb().prepare('SELECT COUNT(*) c FROM user_roles WHERE user_id=?').get(uid).c).toBe(1);
+    expect((await sqlDb().prepare('SELECT COUNT(*) c FROM user_roles WHERE user_id=?').get(uid)).c).toBe(1);
   });
 });
 
@@ -106,14 +107,14 @@ describe('SAML MFA enforcement', () => {
     expect(parseAuthnStatement(xml)).toEqual({ authnContext: 'urn:x:mfa', authnInstant: Date.parse('2026-01-01T00:00:00Z') });
     expect(parseAuthnStatement('<!DOCTYPE x [<!ENTITY a "b">]><Assertion/>')).toEqual({});
   });
-  it('skips the assertion MFA proof when the IdP is trusted to enforce MFA', () => {
+  it('skips the assertion MFA proof when the IdP is trusted to enforce MFA', async () => {
     const trust = { ...sec, samlTrustIdpMfa: true };
     expect(checkSamlMfa({ authnContext: 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password', attrs: {} }, trust, true).ok).toBe(true);
     expect(checkSamlMfa({ authnInstant: Date.now() - 7200_000, attrs: {} }, { ...trust, samlMaxAuthAgeSec: 3600 }, true).reasons).toContain('authentication_too_old');
-    expect(() => saveSettings('security', { ...trust, requireMfaEveryone: true, samlRequiredAuthnContexts: [], samlRequiredAmr: [] })).not.toThrow();
+    await expect(saveSettings('security', { ...trust, requireMfaEveryone: true, samlRequiredAuthnContexts: [], samlRequiredAmr: [] })).resolves.toBeDefined();
   });
-  it('rejects MFA enforcement settings that cannot be satisfied by SAML users', () => {
-    expect(() => saveSettings('security', { ...sec, requireMfaEveryone: true, samlRequiredAuthnContexts: [], samlRequiredAmr: [] })).toThrow();
+  it('rejects MFA enforcement settings that cannot be satisfied by SAML users', async () => {
+    await expect(saveSettings('security', { ...sec, requireMfaEveryone: true, samlRequiredAuthnContexts: [], samlRequiredAmr: [] })).rejects.toThrow();
   });
 });
 
@@ -164,8 +165,8 @@ describe('IdP metadata auto-populate', () => {
 describe('SAML admin API', () => {
   it('preview does not save, requires idp.write, and defaults/warns on NameID format', async () => {
     const app = createApp();
-    const admin = login(app, { username: 'samladmin', roles: ['administrator'] });
-    const dev = login(app, { username: 'devperson' });
+    const admin = await login(app, { username: 'samladmin', roles: ['administrator'] });
+    const dev = await login(app, { username: 'devperson' });
     expect((await dev.post('/api/admin/saml/metadata/preview').send({ xml: metadataXml() })).status).toBe(403);
     const before = getSettings('saml');
     const prev = await admin.post('/api/admin/saml/metadata/preview').send({ xml: metadataXml() });
@@ -183,7 +184,7 @@ describe('SAML admin API', () => {
   });
   it('SP metadata contains entityID, ACS URL, and NameID format; private key never exposed', async () => {
     const app = createApp();
-    const admin = login(app, { username: 'samladmin', roles: ['administrator'] });
+    const admin = await login(app, { username: 'samladmin', roles: ['administrator'] });
     await admin.post('/api/admin/saml/sp-cert');
     const xml = (await admin.get('/api/admin/saml/sp-metadata')).text;
     expect(xml).toContain('entityID="http://localhost:3000/auth/saml/metadata"');

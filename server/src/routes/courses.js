@@ -116,15 +116,16 @@ export function coursesRouter({ adapterFactory } = {}) {
   });
   // Courses the user can author (their own and co-instructed; all of them for course admins).
   route.get('/courses/authored', 'course.author', async (req, res) => {
+    const all = await canAdminCourses(req.user.id);
     const rows = await k()('courses').modify((q) => {
-      if (!canAdminCourses(req.user.id)) q.where('owner_id', req.user.id).orWhereIn('id', k()('course_instructors').where({ user_id: req.user.id }).select('course_id'));
+      if (!all) q.where('owner_id', req.user.id).orWhereIn('id', k()('course_instructors').where({ user_id: req.user.id }).select('course_id'));
     }).orderBy('updated_at', 'desc');
     res.json(rows.map(courseDto));
   });
   route.post('/courses', 'course.author', async (req, res) => {
     const b = validate(courseBody, req.body);
     const id = await insertId(k()('courses'), { title: b.title, description: b.description, owner_id: req.user.id });
-    audit(req.user.id, 'course.create', String(id), { title: b.title });
+    await audit(req.user.id, 'course.create', String(id), { title: b.title });
     res.status(201).json(courseDto(await k()('courses').where({ id }).first()));
   });
 
@@ -143,14 +144,14 @@ export function coursesRouter({ adapterFactory } = {}) {
     const c = await authorCourse(req);
     const b = validate(courseBody.extend({ status: z.enum(['draft', 'published', 'archived']).optional() }), req.body);
     await k()('courses').where({ id: c.id }).update({ title: b.title, description: b.description, status: b.status ?? c.status, updated_at: now() });
-    audit(req.user.id, 'course.update', String(c.id), { status: b.status ?? c.status });
+    await audit(req.user.id, 'course.update', String(c.id), { status: b.status ?? c.status });
     res.json(courseDto(await k()('courses').where({ id: c.id }).first()));
   });
   route.delete('/courses/:id', 'course.author', async (req, res) => {
     const c = await authorCourse(req);
     removeSnapshots((await k()('attempts as att').join('assessments as a', 'a.id', 'att.assessment_id').where('a.course_id', c.id).select('att.id')).map((x) => x.id));
     await k()('courses').where({ id: c.id }).del();
-    audit(req.user.id, 'course.delete', String(c.id), { title: c.title });
+    await audit(req.user.id, 'course.delete', String(c.id), { title: c.title });
     res.json({ ok: true });
   });
 
@@ -162,14 +163,14 @@ export function coursesRouter({ adapterFactory } = {}) {
     if (b.layout === ASSESSMENT_LAYOUT) { // a new quiz: the page and its assessment (default settings, no questions yet)
       const { pageId } = await createAssessmentPage(c.id, { moduleId: b.moduleId ?? null, title: b.title, content: b.content });
       await touch(c.id);
-      audit(req.user.id, 'course.page.create', String(c.id), { page: pageId, layout: b.layout });
+      await audit(req.user.id, 'course.page.create', String(c.id), { page: pageId, layout: b.layout });
       return res.status(201).json(await pageDto(await pageRow(pageId), { author: true }));
     }
     const id = await trx(k(), async (t) => insertId(t('course_pages'), {
       course_id: c.id, module_id: b.moduleId ?? null, position: await nextPosition(c.id, b.moduleId ?? null, t), title: b.title, layout: b.layout, content_json: JSON.stringify(b.content), config_json: JSON.stringify(b.config),
     }));
     await touch(c.id);
-    audit(req.user.id, 'course.page.create', String(c.id), { page: id, layout: b.layout });
+    await audit(req.user.id, 'course.page.create', String(c.id), { page: id, layout: b.layout });
     res.status(201).json(await pageDto(await pageRow(id), { author: true }));
   });
   // Modules group pages. Moving pages between modules and reordering anything is one call: the whole outline.
@@ -185,7 +186,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const b = validate(moduleBody, req.body);
     const id = await trx(k(), async (t) => insertId(t('course_modules'), { course_id: c.id, position: await nextPosition(c.id, null, t), title: b.title }));
     await touch(c.id);
-    audit(req.user.id, 'course.module.create', String(c.id), { module: id });
+    await audit(req.user.id, 'course.module.create', String(c.id), { module: id });
     res.status(201).json({ id, courseId: c.id, title: b.title });
   });
   route.put('/courses/:id/modules/:mid', 'course.author', async (req, res) => {
@@ -193,7 +194,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const b = validate(moduleBody, req.body);
     await k()('course_modules').where({ id: m.id }).update({ title: b.title, updated_at: now() });
     await touch(c.id);
-    audit(req.user.id, 'course.module.update', String(c.id), { module: m.id });
+    await audit(req.user.id, 'course.module.update', String(c.id), { module: m.id });
     res.json({ id: m.id, courseId: c.id, title: b.title });
   });
   // Deleting a module keeps its pages: they move to the top level, where the module was.
@@ -203,7 +204,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     await trx(k(), async (t) => { await t('course_pages').where({ module_id: m.id }).update({ module_id: null }); await t('course_modules').where({ id: m.id }).del(); });
     await applyOutline(c.id, items);
     await touch(c.id);
-    audit(req.user.id, 'course.module.delete', String(c.id), { module: m.id });
+    await audit(req.user.id, 'course.module.delete', String(c.id), { module: m.id });
     res.json({ ok: true });
   });
   route.put('/courses/:id/outline', 'course.author', async (req, res) => {
@@ -212,7 +213,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const { items } = validate(z.object({ items: z.array(item).max(2000) }), req.body);
     if (!(await applyOutline(c.id, items))) fail(400, 'outline_mismatch');
     await touch(c.id);
-    audit(req.user.id, 'course.outline.update', String(c.id));
+    await audit(req.user.id, 'course.outline.update', String(c.id));
     res.json({ ok: true });
   });
   route.put('/courses/:id/pages/:pid', 'course.author', async (req, res) => {
@@ -229,7 +230,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     await k()('course_pages').where({ id: p.id }).update({ title: b.title, layout: b.layout, content_json: JSON.stringify(b.content), config_json: JSON.stringify(b.config), updated_at: now() });
     if (b.layout === ASSESSMENT_LAYOUT) await k()('assessments').where({ page_id: p.id }).update({ title: b.title });
     await touch(c.id);
-    audit(req.user.id, 'course.page.update', String(c.id), { page: p.id });
+    await audit(req.user.id, 'course.page.update', String(c.id), { page: p.id });
     res.json(await pageDto(await pageRow(p.id), { author: true }));
   });
   route.delete('/courses/:id/pages/:pid', 'course.author', async (req, res) => {
@@ -237,7 +238,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const quiz = p.layout === ASSESSMENT_LAYOUT ? await assessmentOfPage(p.id) : null;
     if (quiz) await deleteAssessmentAndPage(quiz); else await k()('course_pages').where({ id: p.id }).del();
     await touch(c.id);
-    audit(req.user.id, 'course.page.delete', String(c.id), { page: p.id });
+    await audit(req.user.id, 'course.page.delete', String(c.id), { page: p.id });
     res.json({ ok: true });
   });
 
@@ -260,7 +261,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     res.json(rows.map((e) => ({ ...e, username: users.get(e.id)?.username ?? null, displayName: users.get(e.id)?.display_name ?? null })));
   });
   const checkSubject = async (req, b) => {
-    if (b.type === 'saml_group' && !canAdminCourses(req.user.id)) fail(403, 'forbidden', { permission: 'course.admin' });
+    if (b.type === 'saml_group' && !(await canAdminCourses(req.user.id))) fail(403, 'forbidden', { permission: 'course.admin' });
     const id = String(b.id);
     if (b.type === 'user' && !(Number.isInteger(Number(id)) && await k()('users').where({ id: Number(id) }).first('id'))) fail(400, 'unknown_user');
     if (b.type === 'role' && !(await k()('roles').where({ name: id }).first('id'))) fail(400, 'unknown_role');
@@ -270,14 +271,14 @@ export function coursesRouter({ adapterFactory } = {}) {
     const c = await authorCourse(req);
     const b = validate(enrollBody, req.body); const id = await checkSubject(req, b);
     await k()('course_enrollments').insert({ course_id: c.id, subject_type: b.type, subject_id: id, assigned_by: req.user.id }).onConflict(['course_id', 'subject_type', 'subject_id']).ignore();
-    audit(req.user.id, 'course.enroll', String(c.id), { type: b.type, id });
+    await audit(req.user.id, 'course.enroll', String(c.id), { type: b.type, id });
     res.status(201).json({ ok: true });
   });
   route.delete('/courses/:id/enrollments', 'course.author', async (req, res) => {
     const c = await authorCourse(req);
     const b = validate(enrollBody, req.body); const id = await checkSubject(req, b);
     await k()('course_enrollments').where({ course_id: c.id, subject_type: b.type, subject_id: id }).del();
-    audit(req.user.id, 'course.unenroll', String(c.id), { type: b.type, id });
+    await audit(req.user.id, 'course.unenroll', String(c.id), { type: b.type, id });
     res.json({ ok: true });
   });
 
@@ -378,7 +379,7 @@ export function coursesRouter({ adapterFactory } = {}) {
           system: courseSystemPrompt({ course: c, page: p, personaName: getSettings('branding').personaName }), messages,
           ctx: { agentMode: 'chat', execMode: 'files_only', permissions: new Set(), userId: req.user.id, webSearch: null, memory: null, ...fileCtx },
           emit, signal: abort.signal, maxIterations: fileMode ? 20 : 1, maxTokens: rm.model.max_tokens, temperature: rm.model.temperature ?? undefined, thinking: thinkingOf(rm.model, thinking),
-          onUsage: (u) => recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'course', ...u }),
+          onUsage: async (u) => await recordUsage({ userId: req.user.id, conversationId: conv.id, model: rm.model, provider: rm.provider, kind: 'course', ...u }),
         });
       } catch (e) { send({ type: 'error', message: 'The model request failed.' }); console.error('course turn error', e?.message); }
       finally { if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); await persistFrom(conv.id, messages, start); await touchConversation(conv.id, { modelId: rm.model.id }); res.end(); }
@@ -387,10 +388,10 @@ export function coursesRouter({ adapterFactory } = {}) {
 
   // ---------- Administration: the tutor subpanel catalog.
   route.get('/admin/course-settings', 'course.admin', (_req, res) => res.json(getSettings('courses')));
-  route.put('/admin/course-settings', 'course.admin', (req, res) => {
+  route.put('/admin/course-settings', 'course.admin', async (req, res) => {
     // Fields left out keep their current value, so the panel and model editors can save independently.
-    const saved = saveSettings('courses', validate(schemas.courses, { ...getSettings('courses'), ...req.body }));
-    audit(req.user.id, 'settings.courses.update', null, { subpanels: saved.subpanels.filter((x) => x.enabled).map((x) => x.id), allowedModelIds: saved.allowedModelIds });
+    const saved = await saveSettings('courses', validate(schemas.courses, { ...getSettings('courses'), ...req.body }));
+    await audit(req.user.id, 'settings.courses.update', null, { subpanels: saved.subpanels.filter((x) => x.enabled).map((x) => x.id), allowedModelIds: saved.allowedModelIds });
     res.json(saved);
   });
 
@@ -422,7 +423,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const rows = await k()('users').where('disabled', 0).where((w) => w
       .whereRaw("lower(username) LIKE ? ESCAPE '!'", [like]).orWhereRaw("lower(email) LIKE ? ESCAPE '!'", [like]).orWhereRaw("lower(display_name) LIKE ? ESCAPE '!'", [like])
       .orWhereRaw("lower(first_name || ' ' || last_name) LIKE ? ESCAPE '!'", [like])).orderBy('id').limit(10);
-    res.json(rows.map((u) => ({ id: u.id, label: userDto(u).displayName, username: u.username || u.email })));
+    res.json(await Promise.all(rows.map(async (u) => ({ id: u.id, label: (await userDto(u)).displayName, username: u.username || u.email }))));
   });
 
   // ---------- Administration: instructors, and every course with its SAML-group assignments.
@@ -431,7 +432,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     const sources = new Map();
     for (const l of links) sources.set(l.user_id, [...(sources.get(l.user_id) ?? []), l.source]);
     const users = sources.size ? await k()('users').whereIn('id', [...sources.keys()]).orderBy('id') : [];
-    res.json(users.map((u) => ({ id: u.id, label: userDto(u).displayName, username: u.username || u.email, viaSaml: sources.get(u.id).includes('saml'), manual: sources.get(u.id).includes('manual') })));
+    res.json(await Promise.all(users.map(async (u) => ({ id: u.id, label: (await userDto(u)).displayName, username: u.username || u.email, viaSaml: sources.get(u.id).includes('saml'), manual: sources.get(u.id).includes('manual') }))));
   });
   // Designating an instructor only touches the manual 'instructor' role; roles the IdP grants stay as they are.
   route.put('/admin/instructors/:userId', { perm: 'course.admin', stepup: true }, async (req, res) => {
@@ -443,7 +444,7 @@ export function coursesRouter({ adapterFactory } = {}) {
     if (!role) fail(409, 'instructor_role_missing');
     if (instructor) await k()('user_roles').insert({ user_id: u.id, role_id: role.id, source: 'manual' }).onConflict(['user_id', 'role_id', 'source']).ignore();
     else await k()('user_roles').where({ user_id: u.id, role_id: role.id, source: 'manual' }).del();
-    audit(req.user.id, instructor ? 'course.instructor.add' : 'course.instructor.remove', u.username || u.email, {});
+    await audit(req.user.id, instructor ? 'course.instructor.add' : 'course.instructor.remove', u.username || u.email, {});
     res.json({ ok: true });
   });
   route.get('/admin/courses', 'course.admin', async (_req, res) => {

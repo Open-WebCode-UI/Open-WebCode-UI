@@ -3,35 +3,36 @@
 //   BREAKGLASS_PASSWORD='...' npm run reset-breakglass -w server
 //   npm run reset-breakglass -w server -- --reset-mfa
 import { randomToken } from '../crypto.js';
-import { getDb } from '../db/index.js';
+import { getKnex } from '../db/index.js';
 import { audit } from '../audit.js';
 import { createLocalUser, hashPassword, checkPassword } from '../users.js';
 import { resetMfa } from '../auth/mfa.js';
 
 export async function resetBreakGlass({ password, resetMfaToo = false, username = 'breakglass' } = {}) {
-  const db = getDb();
+  const k = getKnex();
   const pw = password || randomToken(15);
-  let u = db.prepare("SELECT * FROM users WHERE source='local' AND username=?").get(username);
+  const u = await k('users').where({ source: 'local', username }).first();
   if (!u) {
-    const id = createLocalUser({ username, password: pw, roles: ['administrator'], isBreakGlass: true, mustChange: !password });
-    audit(null, 'cli.breakglass_created', username);
+    const id = await createLocalUser({ username, password: pw, roles: ['administrator'], isBreakGlass: true, mustChange: !password });
+    await audit(null, 'cli.breakglass_created', username);
     return { password: pw, created: true, id };
   }
   checkPassword(pw, username);
-  db.prepare('UPDATE users SET password_hash=?, must_change_password=?, disabled=0, is_break_glass=1, failed_attempts=0, lockouts=0, locked_until=0 WHERE id=?')
-    .run(hashPassword(pw), password ? 0 : 1, u.id);
-  const admin = db.prepare("SELECT id FROM roles WHERE name='administrator'").get().id;
-  db.prepare("INSERT OR IGNORE INTO user_roles (user_id, role_id, source) VALUES (?,?,'manual')").run(u.id, admin);
-  db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(u.id);
+  await k('users').where({ id: u.id }).update({
+    password_hash: hashPassword(pw), must_change_password: password ? 0 : 1, disabled: 0, is_break_glass: 1, failed_attempts: 0, lockouts: 0, locked_until: 0,
+  });
+  const admin = await k('roles').where({ name: 'administrator' }).first('id');
+  await k('user_roles').insert({ user_id: u.id, role_id: admin.id, source: 'manual' }).onConflict(['user_id', 'role_id', 'source']).ignore();
+  await k('sessions').where({ user_id: u.id }).update({ revoked: 1 });
   if (resetMfaToo) await resetMfa(u.id);
-  audit(null, 'cli.breakglass_reset', username, { mfaReset: resetMfaToo });
+  await audit(null, 'cli.breakglass_reset', username, { mfaReset: resetMfaToo });
   return { password: pw, created: false, id: u.id };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { config } = await import('../config.js');
   const { initDb } = await import('../db/index.js');
-  initDb(config.dbFile);
+  await initDb();
   const r = await resetBreakGlass({ password: config.breakGlassPassword, resetMfaToo: process.argv.includes('--reset-mfa') });
   console.log(`\nBreak-glass account ${r.created ? 'created' : 'reset'} (database: ${config.dbFile}).`);
   console.log('  username: breakglass');

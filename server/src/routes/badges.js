@@ -55,21 +55,21 @@ export function badgesRouter() {
     const b = validate(categoryBody, req.body);
     if (await getKnex()('badge_categories').where({ name: b.name }).first('id')) fail(409, 'category_exists', { message: 'A category with that name already exists.' });
     const id = await trx(getKnex(), async (t) => insertId(t('badge_categories'), { name: b.name, position: await nextPosition(t('badge_categories')) }));
-    audit(req.user.id, 'badge.category.create', b.name);
+    await audit(req.user.id, 'badge.category.create', b.name);
     res.status(201).json((await listAll()).categories.find((c) => c.id === id));
   });
   // Registered before '/:id' so "order" is never read as an id.
   route.put('/admin/badge-categories/order', 'provider.write', async (req, res) => {
     const { ids } = validate(orderBody, req.body);
     await reorder('badge_categories', ids);
-    audit(req.user.id, 'badge.category.reorder', null, { ids });
+    await audit(req.user.id, 'badge.category.reorder', null, { ids });
     res.json({ ok: true });
   });
   route.put('/admin/badge-categories/:id', 'provider.write', async (req, res) => {
     const c = await category(req.params.id), b = validate(categoryBody, req.body);
     if (await getKnex()('badge_categories').where({ name: b.name }).whereNot({ id: c.id }).first('id')) fail(409, 'category_exists', { message: 'A category with that name already exists.' });
     await getKnex()('badge_categories').where({ id: c.id }).update({ name: b.name });
-    audit(req.user.id, 'badge.category.update', b.name, { was: c.name });
+    await audit(req.user.id, 'badge.category.update', b.name, { was: c.name });
     res.json({ id: c.id, name: b.name });
   });
   // Badges in a deleted category are kept, uncategorized.
@@ -82,7 +82,7 @@ export function badgesRouter() {
       if (clash) fail(409, 'badge_exists', { message: `Cannot delete: "${clash.label}" would duplicate an uncategorized badge. Rename or move it first.` });
       await t('badge_categories').where({ id: c.id }).del();
     });
-    audit(req.user.id, 'badge.category.delete', c.name);
+    await audit(req.user.id, 'badge.category.delete', c.name);
     res.json({ ok: true });
   });
 
@@ -90,26 +90,26 @@ export function badgesRouter() {
     const b = validate(badgeBody, req.body);
     await checkCategory(b.categoryId); await checkUnique(b.label, b.categoryId);
     const id = await trx(getKnex(), async (t) => insertId(t('badges'), { category_id: b.categoryId, label: b.label, description: b.description, color: b.color, position: await nextPosition(t('badges')) }));
-    audit(req.user.id, 'badge.create', b.label);
+    await audit(req.user.id, 'badge.create', b.label);
     res.status(201).json((await listAll()).badges.find((x) => x.id === id));
   });
   route.put('/admin/badges/order', 'provider.write', async (req, res) => {
     const { ids } = validate(orderBody, req.body);
     await reorder('badges', ids);
-    audit(req.user.id, 'badge.reorder', null, { ids });
+    await audit(req.user.id, 'badge.reorder', null, { ids });
     res.json({ ok: true });
   });
   route.put('/admin/badges/:id', 'provider.write', async (req, res) => {
     const old = await badge(req.params.id), b = validate(badgeBody, req.body);
     await checkCategory(b.categoryId); await checkUnique(b.label, b.categoryId, old.id);
     await getKnex()('badges').where({ id: old.id }).update({ category_id: b.categoryId, label: b.label, description: b.description, color: b.color });
-    audit(req.user.id, 'badge.update', b.label, { was: old.label });
+    await audit(req.user.id, 'badge.update', b.label, { was: old.label });
     res.json((await listAll()).badges.find((x) => x.id === old.id));
   });
   route.delete('/admin/badges/:id', 'provider.write', async (req, res) => {
     const old = await badge(req.params.id);
     await getKnex()('badges').where({ id: old.id }).del(); // removed from every model by the cascade
-    audit(req.user.id, 'badge.delete', old.label);
+    await audit(req.user.id, 'badge.delete', old.label);
     res.json({ ok: true });
   });
 
@@ -129,7 +129,7 @@ export function badgesRouter() {
       if (ids.length) await t('model_badges').insert(ids.map((i) => ({ model_id: m.id, badge_id: i })));
       await t('models').where({ id: m.id }).update({ featured_badge_id: featured });
     });
-    audit(req.user.id, 'provider.model.badges', m.provider, { model: m.modelId, badgeIds: ids, featuredBadgeId: featured });
+    await audit(req.user.id, 'provider.model.badges', m.provider, { model: m.modelId, badgeIds: ids, featuredBadgeId: featured });
     res.json({ badgeIds: ids, featuredBadgeId: featured });
   });
   return r;

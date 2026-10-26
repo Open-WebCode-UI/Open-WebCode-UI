@@ -1,3 +1,6 @@
+import Database from 'better-sqlite3';
+import { legacySchema } from '../src/db/legacy-migrate.js';
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +10,7 @@ import { createCheckpoint } from '../src/workspace/checkpoints.js';
 import { systemPromptFor, DEFAULT_PLAN_PROMPT, DEFAULT_ACT_PROMPT } from '../src/agent/prompts.js';
 import { BUILTIN_SKILLS, expandSkillInvocation, listSkills } from '../src/skills.js';
 import { freshDb, createApp, login, makeRole, addProvider, fakeAdapterFactory, tmpDir } from './helpers.js';
-import { getDb, openDb } from '../src/db/index.js';
+import { openDb } from '../src/db/index.js';
 
 const skillsFixture = [{ name: 'code-review', description: 'review', instructions: 'Check the code.' }];
 let root, data;
@@ -104,34 +107,34 @@ const events2 = [];
 describe('endpoint events', () => {
   const parse = (text) => text.split('\n\n').filter((l) => l.startsWith('data: ')).map((l) => JSON.parse(l.slice(6)));
   const turn = (u, body) => u.post('/api/agent/turn').send(body).buffer(true).parse((res, cb) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => cb(null, d)); });
-  const setup = (script) => { freshDb(); const modelId = addProvider(); const app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, setup.seen = []) } }); return { app, modelId }; };
+  const setup = async (script) => { await freshDb(); const modelId = await addProvider(); const app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, setup.seen = []) } }); return { app, modelId }; };
 
   it('streams a conclusion event (distinct from text) at the end of an Act turn', async () => {
-    const { app, modelId } = setup([[{ type: 'tool_call', id: 'w', name: 'write_file', args: { path: 'a.txt', content: 'x' } }], [{ type: 'tool_call', id: 'c', name: 'conclude', args: { summary: 'Created a.txt', status: 'complete', changes: ['a.txt'], verification: 'read it back', next_steps: ['commit'] } }]]);
-    const u = login(app, { username: 'concluder' }); const p = (await u.post('/api/projects').send({ name: 'cp1' })).body;
+    const { app, modelId } = await setup([[{ type: 'tool_call', id: 'w', name: 'write_file', args: { path: 'a.txt', content: 'x' } }], [{ type: 'tool_call', id: 'c', name: 'conclude', args: { summary: 'Created a.txt', status: 'complete', changes: ['a.txt'], verification: 'read it back', next_steps: ['commit'] } }]]);
+    const u = await login(app, { username: 'concluder' }); const p = (await u.post('/api/projects').send({ name: 'cp1' })).body;
     const ev = parse((await turn(u, { projectId: p.id, message: 'go', mode: 'act', modelId })).body);
     expect(ev.map((e) => e.type)).toEqual(expect.arrayContaining(['tool_start', 'tool_result', 'conclusion', 'done']));
     expect(ev.find((e) => e.type === 'conclusion')).toMatchObject({ summary: 'Created a.txt', status: 'complete', changes: ['a.txt'], next_steps: ['commit'] });
     expect(ev.at(-1).type).toBe('done');
   });
   it('Plan mode: switch_mode emits mode_request and the turn ends; no files change', async () => {
-    const { app, modelId } = setup([[{ type: 'tool_call', id: 's', name: 'switch_mode', args: { mode: 'act', reason: 'small fix' } }]]);
-    const u = login(app, { username: 'switcher1' }); const p = (await u.post('/api/projects').send({ name: 'cp2' })).body;
+    const { app, modelId } = await setup([[{ type: 'tool_call', id: 's', name: 'switch_mode', args: { mode: 'act', reason: 'small fix' } }]]);
+    const u = await login(app, { username: 'switcher1' }); const p = (await u.post('/api/projects').send({ name: 'cp2' })).body;
     const ev = parse((await turn(u, { projectId: p.id, message: 'fix typo', mode: 'plan', modelId })).body);
     expect(ev.find((e) => e.type === 'mode_request')).toEqual({ type: 'mode_request', to: 'act', reason: 'small fix' });
     expect((await u.get(`/api/projects/${p.id}/tree`)).body).toEqual([]);
   });
   it('Act mode: switch_mode reverts to plan, is audited, and ends the turn', async () => {
-    const { app, modelId } = setup([[{ type: 'tool_call', id: 's', name: 'switch_mode', args: { mode: 'plan', reason: 'this deletes data' } }]]);
-    const u = login(app, { username: 'reverter1' }); const p = (await u.post('/api/projects').send({ name: 'cp3' })).body;
+    const { app, modelId } = await setup([[{ type: 'tool_call', id: 's', name: 'switch_mode', args: { mode: 'plan', reason: 'this deletes data' } }]]);
+    const u = await login(app, { username: 'reverter1' }); const p = (await u.post('/api/projects').send({ name: 'cp3' })).body;
     const ev = parse((await turn(u, { projectId: p.id, message: 'go', mode: 'act', modelId })).body);
     expect(ev.find((e) => e.type === 'mode_changed')).toEqual({ type: 'mode_changed', to: 'plan', reason: 'this deletes data' });
-    expect(getDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='agent.mode_reverted'").get().c).toBe(1);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='agent.mode_reverted'").get()).c).toBe(1);
   });
   it('a user without agent.act is never offered switch_mode in Plan mode', async () => {
-    const { app, modelId } = setup([[{ type: 'text', text: 'hi' }]]);
-    makeRole('planonly', ['project.read', 'project.write', 'files.read', 'agent.plan', 'provider.use']);
-    const u = login(app, { username: 'planonly2', roles: ['planonly'] }); const p = (await u.post('/api/projects').send({ name: 'cp4' })).body;
+    const { app, modelId } = await setup([[{ type: 'text', text: 'hi' }]]);
+    await makeRole('planonly', ['project.read', 'project.write', 'files.read', 'agent.plan', 'provider.use']);
+    const u = await login(app, { username: 'planonly2', roles: ['planonly'] }); const p = (await u.post('/api/projects').send({ name: 'cp4' })).body;
     await turn(u, { projectId: p.id, message: 'x', mode: 'plan', modelId });
     expect(setup.seen[0].tools).not.toContain('switch_mode');
   });
@@ -147,7 +150,7 @@ describe('endpoint events', () => {
 
 describe('skills', () => {
   let app, u;
-  beforeEach(() => { freshDb(); app = createApp(); u = login(app, { username: 'skiller1' }); });
+  beforeEach(async () => { await freshDb(); app = createApp(); u = await login(app, { username: 'skiller1' }); });
 
   it('ships useful pre-written skills, enabled by default', async () => {
     const list = (await u.get('/api/skills')).body;
@@ -165,7 +168,7 @@ describe('skills', () => {
     await u.put('/api/skills/builtin/code-review').send({ enabled: false });
     s = (await u.get('/api/skills')).body.find((x) => x.name === 'code-review');
     expect(s).toMatchObject({ enabled: false, instructions: 'My custom review rules' }); // earlier edit kept
-    const other = login(app, { username: 'skiller2' });
+    const other = await login(app, { username: 'skiller2' });
     expect((await other.get('/api/skills')).body.find((x) => x.name === 'code-review')).toMatchObject({ modified: false, enabled: true }); // not shared
     await u.del('/api/skills/builtin/code-review');
     expect((await u.get('/api/skills')).body.find((x) => x.name === 'code-review')).toMatchObject({ modified: false, enabled: true, instructions: BUILTIN_SKILLS.find((b) => b.key === 'code-review').instructions });
@@ -186,43 +189,45 @@ describe('skills', () => {
   });
   it('users cannot read or change each other\'s skills', async () => {
     const c = await u.post('/api/skills').send({ name: 'mine-only', instructions: 'secret rules' });
-    const other = login(app, { username: 'skiller3' });
+    const other = await login(app, { username: 'skiller3' });
     expect((await other.get('/api/skills')).body.some((s) => s.name === 'mine-only')).toBe(false);
     expect((await other.put(`/api/skills/custom/${c.body.id}`).send({ name: 'mine-only', instructions: 'hijack' })).status).toBe(404);
     expect((await other.del(`/api/skills/custom/${c.body.id}`)).status).toBe(404);
-    expect(getDb().prepare('SELECT instructions FROM skills WHERE id=?').get(c.body.id).instructions).toBe('secret rules');
+    expect((await sqlDb().prepare('SELECT instructions FROM skills WHERE id=?').get(c.body.id)).instructions).toBe('secret rules');
   });
   it('editing requires profile.skills.edit (listing does not)', async () => {
-    makeRole('viewer', ['chat.use']); const v = login(app, { username: 'skillview', roles: ['viewer'] });
+    await makeRole('viewer', ['chat.use']); const v = await login(app, { username: 'skillview', roles: ['viewer'] });
     expect((await v.get('/api/skills?scope=chat')).status).toBe(200);
     expect((await v.get('/api/skills')).status).toBe(403); // agent skills need agent access
     expect((await v.post('/api/skills?scope=chat').send({ name: 'nope', instructions: 'x' })).status).toBe(403);
     expect((await v.put('/api/skills/builtin/debug?scope=chat').send({ enabled: false })).status).toBe(403);
     expect((await u.post('/api/skills').send({ name: 'okay-one', instructions: 'x' })).status).toBe(201); // developer role has it
   });
-  it('the developer role gets the new permission on databases created before skills existed', () => {
+  it('the developer role gets the new permission on databases created before skills existed', async () => {
     const dir = tmpDir('skills-migr-'); const file = `${dir}/old.db`;
-    const db = openDb(file);
-    db.exec("DELETE FROM role_permissions WHERE permission='profile.skills.edit'; DELETE FROM settings WHERE key='migr:skills-perm';");
-    db.close();
-    const again = openDb(file);
-    const dev = again.prepare("SELECT id FROM roles WHERE name='developer'").get().id;
-    expect(again.prepare("SELECT 1 FROM role_permissions WHERE role_id=? AND permission='profile.skills.edit'").get(dev)).toBeTruthy();
+    // The legacy schema with a developer role that lacks the skills permission and no one-time grant recorded.
+    const old = new Database(file);
+    old.exec(legacySchema);
+    old.exec("INSERT INTO roles (name, description, builtin) VALUES ('developer','d',1); INSERT INTO role_permissions VALUES (1, 'chat.use');");
+    old.close();
+    const db = await openDb(file);
+    expect(await db('role_permissions').where({ role_id: 1, permission: 'profile.skills.edit' }).first()).toBeTruthy();
+    await db.destroy();
   });
   it('/skill-name expands server-side for the model; the user\'s own text is what history shows', async () => {
-    const id = login(app, { username: 'slash1' }).id;
+    const id = (await login(app, { username: 'slash1' })).id;
     const inv = await expandSkillInvocation(id, '/code-review src/app.js please');
     expect(inv.skill.name).toBe('code-review'); expect(inv.display).toBe('/code-review src/app.js please');
     expect(inv.content).toContain('<skill-instructions>'); expect(inv.content).toContain('User request: src/app.js please');
     expect((await expandSkillInvocation(id, '/code-review')).content).toContain('Apply this skill to the current project.');
     expect(await expandSkillInvocation(id, '/unknown-skill hi')).toBeNull(); expect(await expandSkillInvocation(id, 'not a /code-review')).toBeNull();
-    getDb().prepare("INSERT INTO skills (user_id, builtin_key, name, description, instructions, enabled) VALUES (?,?,?,?,?,0)").run(id, 'debug', 'debug', 'd', 'x');
+    (await sqlDb().prepare("INSERT INTO skills (user_id, builtin_key, name, description, instructions, enabled) VALUES (?,?,?,?,?,0)").run(id, 'debug', 'debug', 'd', 'x'));
     expect(await expandSkillInvocation(id, '/debug now')).toBeNull(); // disabled skills are not invocable
   });
   it('invoking a skill in chat and agent turns sends the instructions to the model and saves the original text', async () => {
-    const modelId = addProvider(); const seen = [];
+    const modelId = await addProvider(); const seen = [];
     const app2 = createApp({ deps: { adapterFactory: fakeAdapterFactory([[{ type: 'text', text: 'reviewed' }], [{ type: 'text', text: 'again' }]], seen) } });
-    const w = login(app2, { username: 'slash2' });
+    const w = await login(app2, { username: 'slash2' });
     const res = await w.post('/api/chat/turn').send({ message: '/code-review the login flow', modelId }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
     const ev = res.body.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.slice(6)));
     const sent = seen[0].messages[0].content;
@@ -233,5 +238,5 @@ describe('skills', () => {
     const t = await w.post('/api/agent/turn').send({ projectId: p.id, message: '/code-review', mode: 'plan', modelId }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
     expect(t.body).toContain('"type":"skill"'); expect(seen[1].system).toContain('# Skills'); expect(seen[1].system).toContain('- code-review:');
   });
-  it('listSkills only includes the caller\'s data', async () => { expect((await listSkills(login(app, { username: 'lister1' }).id)).length).toBe(BUILTIN_SKILLS.length); });
+  it('listSkills only includes the caller\'s data', async () => { expect((await listSkills((await login(app, { username: 'lister1' })).id)).length).toBe(BUILTIN_SKILLS.length); });
 });

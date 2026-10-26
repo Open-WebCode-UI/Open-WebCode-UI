@@ -1,10 +1,11 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login, request, PW, makeRole } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { getSettings, defaults } from '../src/settings.js';
 
 let app, admin, dev;
-beforeEach(() => { freshDb(); app = createApp(); admin = login(app, { username: 'rootadmin', roles: ['administrator'] }); dev = login(app, { username: 'devperson' }); });
+beforeEach(async () => { await freshDb(); app = createApp(); admin = await login(app, { username: 'rootadmin', roles: ['administrator'] }); dev = await login(app, { username: 'devperson' }); });
 const png = 'data:image/png;base64,' + Buffer.from('fakepng').toString('base64');
 
 describe('General settings', () => {
@@ -20,8 +21,8 @@ describe('General settings', () => {
   it('requires settings.read/write', async () => {
     expect((await dev.get('/api/admin/general')).status).toBe(403);
     expect((await dev.put('/api/admin/general').send({ appName: 'x' })).status).toBe(403);
-    makeRole('reader', ['settings.read']);
-    const r = login(app, { username: 'reader1', roles: ['reader'] });
+    await makeRole('reader', ['settings.read']);
+    const r = await login(app, { username: 'reader1', roles: ['reader'] });
     expect((await r.get('/api/admin/general')).status).toBe(200);
     expect((await r.put('/api/admin/general').send({ appName: 'x' })).status).toBe(403);
   });
@@ -31,7 +32,7 @@ describe('General settings', () => {
     expect((await admin.put('/api/admin/general/exec-mode').send({ execMode: 'bogus' })).status).toBe(400);
     expect((await admin.put('/api/admin/general/exec-mode').send({ execMode: 'workspace_shell' })).status).toBe(200);
     expect(getSettings('general').execMode).toBe('workspace_shell');
-    const row = getDb().prepare("SELECT * FROM audit WHERE action='settings.exec_mode'").get();
+    const row = (await sqlDb().prepare("SELECT * FROM audit WHERE action='settings.exec_mode'").get());
     expect(row.target).toBe('workspace_shell'); expect(JSON.parse(row.detail).from).toBe('files_only');
   });
 });
@@ -78,14 +79,14 @@ describe('Local authentication (user CRUD)', () => {
     expect((await admin.put(`/api/admin/users/${admin.id}`).send({ disabled: true })).body.error).toBe('last_administrator');
   });
   it('SAML users cannot get local passwords or break-glass flags', async () => {
-    const id = Number(getDb().prepare("INSERT INTO users (source,email,idp_entity_id,name_id) VALUES ('saml','s@x.com','idp','n1')").run().lastInsertRowid);
+    const id = Number((await sqlDb().prepare("INSERT INTO users (source,email,idp_entity_id,name_id) VALUES ('saml','s@x.com','idp','n1')").run()).lastInsertRowid);
     expect((await admin.put(`/api/admin/users/${id}`).send({ password: PW })).body.error).toBe('saml_user_no_password');
     expect((await admin.put(`/api/admin/users/${id}`).send({ isBreakGlass: true })).body.error).toBe('saml_user_no_breakglass');
     const list = (await admin.get('/api/admin/users')).body;
     expect(list.find((x) => x.id === id).source).toBe('saml');
   });
   it('disabling a user revokes their sessions immediately', async () => {
-    const target = login(app, { username: 'victim1' });
+    const target = await login(app, { username: 'victim1' });
     expect((await target.get('/api/projects')).status).toBe(200);
     await admin.put(`/api/admin/users/${target.id}`).send({ disabled: true });
     expect((await target.get('/api/projects')).status).toBe(401);
@@ -101,7 +102,7 @@ describe('Security settings (MFA enforcement)', () => {
     expect((await admin.put('/api/admin/security').send(trust)).body.error).toBe('saml_not_enabled'); // SAML not enabled yet
     expect((await admin.put('/api/admin/security').send({ passwordMinLength: 3 })).status).toBe(400);
     expect((await dev.put('/api/admin/security').send({ requireMfaEveryone: false })).status).toBe(403);
-    const stale = login(app, { username: 'staleadm', roles: ['administrator'], stepup: false });
+    const stale = await login(app, { username: 'staleadm', roles: ['administrator'], stepup: false });
     expect((await stale.put('/api/admin/security').send({ mfaGraceDays: 1 })).body.error).toBe('mfa_required');
   });
 });
@@ -123,9 +124,9 @@ describe('Roles & group mapping', () => {
 describe('SSO button text', () => {
   it('defaults to "Log in with SSO" and follows the saml setting in the public config', async () => {
     const { publicConfig, getSettings, saveSettings } = await import('../src/settings.js');
-    freshDb();
+    await freshDb();
     expect(publicConfig().ssoButtonText).toBe('Log in with SSO');
-    saveSettings('saml', { ...getSettings('saml'), buttonText: 'Sign in with Acme' });
+    await saveSettings('saml', { ...getSettings('saml'), buttonText: 'Sign in with Acme' });
     expect(publicConfig().ssoButtonText).toBe('Sign in with Acme');
   });
 });

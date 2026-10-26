@@ -1,6 +1,7 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { gradeAuto, cleanResponse, percent } from '../src/courses/grading.js';
 
 let app; let inst; let stu; let other; let course; let page; let quiz;
@@ -14,10 +15,10 @@ const qs = async () => (await inst.get(`${A()}/manage`)).body.find((a) => a.id =
 async function attempt(u = stu) { return (await u.post(`${A()}/${quiz.id}/attempts`)).body; }
 
 beforeEach(async () => {
-  freshDb(); app = createApp();
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  other = login(app, { username: 'teacher2', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['developer'] });
+  await freshDb(); app = createApp();
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  other = await login(app, { username: 'teacher2', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['developer'] });
   course = (await inst.post('/api/courses').send({ title: 'Quizzes' })).body;
   await inst.put(`/api/courses/${course.id}`).send({ title: 'Quizzes', status: 'published' });
   page = (await inst.post(`/api/courses/${course.id}/pages`).send({ title: 'P1' })).body;
@@ -119,7 +120,7 @@ describe('taking an assessment', () => {
   });
   it('only enrolled learners can take it, and nobody reads another learner\'s attempt', async () => {
     await addQ(tf);
-    const out = login(app, { username: 'outsider1', roles: ['developer'] });
+    const out = await login(app, { username: 'outsider1', roles: ['developer'] });
     expect((await out.post(`${A()}/${quiz.id}/attempts`)).status).toBe(404);
     expect((await inst.post(`${A()}/${quiz.id}/attempts`)).status).toBe(404); // authors are not learners unless enrolled
     const att = await attempt();
@@ -162,7 +163,7 @@ describe('manual grading', () => {
   it('deleting the assessment removes its attempts', async () => {
     await addQ(tf); await attempt();
     expect((await inst.del(`${A()}/${quiz.id}`)).status).toBe(200);
-    expect(getDb().prepare('SELECT COUNT(*) n FROM attempts').get().n).toBe(0);
+    expect((await sqlDb().prepare('SELECT COUNT(*) n FROM attempts').get()).n).toBe(0);
   });
 });
 
@@ -197,7 +198,8 @@ describe('assessment modes', () => {
     const a2 = await attempt(); await submit(a2, { [t.id]: { value: true }, [m.id]: { choices: [1] } });
     const info = (await stu.get(A())).body[0];
     expect(info).toMatchObject({ mode: 'limited', attemptsUsed: 2, passed: true });
-    expect(info.bestScore).toBe(Math.max(...[a1, a2].map((x) => getDb().prepare('SELECT score FROM attempts WHERE id=?').get(x.id).score)));
+    const scores = []; for (const x of [a1, a2]) scores.push((await sqlDb().prepare('SELECT score FROM attempts WHERE id=?').get(x.id)).score);
+    expect(info.bestScore).toBe(Math.max(...scores));
     expect((await stu.post(`${A()}/${quiz.id}/attempts`)).status).toBe(403);
     expect(await done()).toEqual([quiz.pageId]);
   });
@@ -217,7 +219,7 @@ describe('assessment modes', () => {
     expect((await inst.get(`${A()}/${quiz.id}/attempts`)).body[0].score).toBeNull();
     expect((await inst.get(`/api/courses/${course.id}/attempts/${a1.id}`)).body.score).toBeNull();
     expect(await done()).toEqual([quiz.pageId]); // no pass score: finishing it is enough
-    getDb().prepare('DELETE FROM course_progress').run();
+    (await sqlDb().prepare('DELETE FROM course_progress').run());
     await settings({ mode: 'unscored', passPct: 100 });
     await submit(await attempt(), { [t.id]: { value: false } });
     expect(await done()).toEqual([]);

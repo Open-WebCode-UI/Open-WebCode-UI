@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getDb } from './db/index.js';
+import { getKnex } from './db/index.js';
 
 const shellDefaults = { timeoutSec: 60, outputCapBytes: 100_000 };
 
@@ -191,18 +191,34 @@ export const defaults = {
 // Public subset exposed unauthenticated for theming the login page.
 export const PUBLIC_GENERAL = ['appName', 'aiDisclaimer', 'tagline', 'helpdeskEmail', 'helpdeskPhone', 'helpdeskUrl', 'helpdeskHours', 'supportMessage', 'loginBanner', 'termsNotice', 'contactName', 'contactEmail', 'funMode', 'coursesEnabled'];
 
+// Settings are read on every request (many of the reads are in synchronous code paths), so the process keeps a copy. It is loaded when the
+// database opens, updated on every save, and refreshed from the database on an interval (startSettingsRefresh) so that a change made
+// by another server instance reaches this one within seconds.
+const cache = new Map();
+
+export async function loadSettings(knex = getKnex()) {
+  const rows = await knex('settings').select('key', 'value');
+  cache.clear();
+  for (const r of rows) cache.set(r.key, JSON.parse(r.value));
+}
+
 export function getSettings(group) {
-  const row = getDb().prepare('SELECT value FROM settings WHERE key=?').get(group);
-  return { ...defaults[group], ...(row ? JSON.parse(row.value) : {}) };
+  return { ...defaults[group], ...(cache.get(group) ?? {}) };
 }
 
 export const coursesEnabled = () => !!getSettings('general').coursesEnabled;
 
-export function saveSettings(group, value) {
+export async function saveSettings(group, value) {
   const parsed = schemas[group].parse(value);
-  getDb().prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
-    .run(group, JSON.stringify(parsed));
+  await getKnex()('settings').insert({ key: group, value: JSON.stringify(parsed) }).onConflict('key').merge();
+  cache.set(group, parsed);
   return parsed;
+}
+
+export function startSettingsRefresh(everyMs = 5000) {
+  const timer = setInterval(() => { loadSettings().catch((e) => console.error('settings refresh failed:', e.message)); }, everyMs);
+  timer.unref();
+  return timer;
 }
 
 export function publicConfig() {

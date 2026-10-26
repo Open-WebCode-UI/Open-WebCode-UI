@@ -1,6 +1,7 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, request, login, PW } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { audit, verifyAudit } from '../src/audit.js';
 import { saveSettings, getSettings, publicConfig } from '../src/settings.js';
 import { sanitizeSvg } from '../src/svg.js';
@@ -8,7 +9,7 @@ import { redact } from '../src/crypto.js';
 import { createSession, loadSession, rotateSession } from '../src/auth/session.js';
 
 let app;
-beforeEach(() => { freshDb(); app = createApp(); });
+beforeEach(async () => { await freshDb(); app = createApp(); });
 
 describe('headers & CSRF', () => {
   it('sets security headers and a strict CSP', async () => {
@@ -22,7 +23,7 @@ describe('headers & CSRF', () => {
     expect(res.headers['referrer-policy']).toBe('same-origin');
   });
   it('rejects state-changing requests without the CSRF token or from a foreign Origin', async () => {
-    const u = login(app, { username: 'csrfuser' });
+    const u = await login(app, { username: 'csrfuser' });
     const noToken = await request(app).post('/api/projects').set('Cookie', u.cookie).send({ name: 'p1' });
     expect(noToken.status).toBe(403); expect(noToken.body.error).toBe('csrf');
     const bad = await request(app).post('/api/projects').set('Cookie', u.cookie).set('x-csrf-token', 'nope').send({ name: 'p1' });
@@ -39,19 +40,19 @@ describe('headers & CSRF', () => {
 
 describe('sessions', () => {
   it('rotation revokes the old id; idle and absolute timeouts and revocation end the session', async () => {
-    const id = login(app, { username: 'sessuser' }).id;
+    const id = (await login(app, { username: 'sessuser' })).id;
     const s = await createSession(id);
     const n = await rotateSession(s.id);
     expect(await loadSession(s.id)).toBeNull(); expect(await loadSession(n.id)).not.toBeNull();
-    getDb().prepare('UPDATE sessions SET last_seen=last_seen-100000 WHERE id=?').run(n.id);
+    (await sqlDb().prepare('UPDATE sessions SET last_seen=last_seen-100000 WHERE id=?').run(n.id));
     expect(await loadSession(n.id)).toBeNull(); // idle timeout
-    const a = await createSession(id); getDb().prepare('UPDATE sessions SET created_at=created_at-999999 WHERE id=?').run(a.id);
+    const a = await createSession(id); (await sqlDb().prepare('UPDATE sessions SET created_at=created_at-999999 WHERE id=?').run(a.id));
     expect(await loadSession(a.id)).toBeNull(); // absolute timeout
-    const b = await createSession(id); getDb().prepare('UPDATE users SET disabled=1 WHERE id=?').run(id);
+    const b = await createSession(id); (await sqlDb().prepare('UPDATE users SET disabled=1 WHERE id=?').run(id));
     expect(await loadSession(b.id)).toBeNull(); // disabled users lose sessions
   });
   it('"sign out all sessions" revokes others and keeps the current one', async () => {
-    const u = login(app, { username: 'multisess' });
+    const u = await login(app, { username: 'multisess' });
     const other = await createSession(u.id);
     expect((await u.post('/api/auth/sessions/revoke-all')).status).toBe(200);
     expect(await loadSession(other.id)).toBeNull();
@@ -60,15 +61,15 @@ describe('sessions', () => {
   it('session cookie is HttpOnly + SameSite=Lax', async () => {
     createApp();
     const { createLocalUser } = await import('../src/users.js');
-    createLocalUser({ username: 'cookieuser', password: PW, roles: ['developer'] });
+    await createLocalUser({ username: 'cookieuser', password: PW, roles: ['developer'] });
     const r = await request(app).post('/api/auth/local/login').send({ username: 'cookieuser', password: PW });
     expect(r.status).toBe(200);
     const cookie = r.headers['set-cookie'].join(';');
     expect(cookie).toMatch(/HttpOnly/i); expect(cookie).toMatch(/SameSite=Lax/i);
   });
   it('forces a password change before anything else', async () => {
-    const u = login(app, { username: 'mustchange' });
-    getDb().prepare('UPDATE users SET must_change_password=1 WHERE id=?').run(u.id);
+    const u = await login(app, { username: 'mustchange' });
+    (await sqlDb().prepare('UPDATE users SET must_change_password=1 WHERE id=?').run(u.id));
     expect((await u.get('/api/projects')).body.error).toBe('password_change_required');
     expect((await u.post('/api/auth/password').send({ current: PW, next: 'A-brand-new-Passphrase-77' })).status).toBe(200);
     expect((await u.get('/api/projects')).status).toBe(200);
@@ -76,27 +77,27 @@ describe('sessions', () => {
 });
 
 describe('audit log', () => {
-  it('hash chain verifies and detects tampering', () => {
-    audit(1, 'a', 't', { n: 1 }); audit(1, 'b', 't', { n: 2 }); audit(2, 'c', null, { password: 'hunter2' });
-    expect(verifyAudit()).toMatchObject({ ok: true, count: 3 });
-    expect(getDb().prepare('SELECT detail FROM audit WHERE action=?').get('c').detail).not.toContain('hunter2');
-    getDb().prepare("UPDATE audit SET action='tampered' WHERE action='b'").run();
-    expect(verifyAudit().ok).toBe(false);
+  it('hash chain verifies and detects tampering', async () => {
+    await audit(1, 'a', 't', { n: 1 }); await audit(1, 'b', 't', { n: 2 }); await audit(2, 'c', null, { password: 'hunter2' });
+    expect(await verifyAudit()).toMatchObject({ ok: true, count: 3 });
+    expect((await sqlDb().prepare('SELECT detail FROM audit WHERE action=?').get('c')).detail).not.toContain('hunter2');
+    (await sqlDb().prepare("UPDATE audit SET action='tampered' WHERE action='b'").run());
+    expect((await verifyAudit()).ok).toBe(false);
   });
-  it('detects row deletion', () => {
-    audit(1, 'a'); audit(1, 'b'); audit(1, 'c');
-    getDb().prepare("DELETE FROM audit WHERE action='b'").run();
-    expect(verifyAudit().ok).toBe(false);
+  it('detects row deletion', async () => {
+    await audit(1, 'a'); await audit(1, 'b'); await audit(1, 'c');
+    (await sqlDb().prepare("DELETE FROM audit WHERE action='b'").run());
+    expect((await verifyAudit()).ok).toBe(false);
   });
   it('audit API requires audit.read', async () => {
-    const dev = login(app, { username: 'devperson' }), adm = login(app, { username: 'auditadm', roles: ['administrator'] });
+    const dev = await login(app, { username: 'devperson' }), adm = await login(app, { username: 'auditadm', roles: ['administrator'] });
     expect((await dev.get('/api/admin/audit')).status).toBe(403);
     const r = await adm.get('/api/admin/audit');
     expect(r.status).toBe(200); expect(r.body.integrity.ok).toBe(true);
   });
   it('audit API paginates newest-first with a keyset cursor', async () => {
-    const adm = login(app, { username: 'auditpager', roles: ['administrator'] });
-    for (let i = 0; i < 5; i++) audit('t', `page.${i}`);
+    const adm = await login(app, { username: 'auditpager', roles: ['administrator'] });
+    for (let i = 0; i < 5; i++) await audit('t', `page.${i}`);
     const p1 = (await adm.get('/api/admin/audit?limit=2')).body;
     expect(p1.rows).toHaveLength(2); expect(p1.hasMore).toBe(true); expect(p1.integrity.ok).toBe(true);
     const p2 = (await adm.get(`/api/admin/audit?limit=2&before=${p1.nextBefore}`)).body;
@@ -105,8 +106,8 @@ describe('audit log', () => {
 });
 
 describe('misc hardening', () => {
-  it('public config exposes only the public subset', () => {
-    saveSettings('general', { ...getSettings('general'), contactEmail: 'c@x.com', helpdeskEmail: 'help@x.com', maxUploadMb: 7, secretGlobs: ['.env'] });
+  it('public config exposes only the public subset', async () => {
+    await saveSettings('general', { ...getSettings('general'), contactEmail: 'c@x.com', helpdeskEmail: 'help@x.com', maxUploadMb: 7, secretGlobs: ['.env'] });
     const p = publicConfig();
     expect(p.general.helpdeskEmail).toBe('help@x.com');
     expect(JSON.stringify(p)).not.toMatch(/secretGlobs|execMode|maxUploadMb|spPrivateKey|idpCerts/);

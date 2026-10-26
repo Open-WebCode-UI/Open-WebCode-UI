@@ -35,7 +35,7 @@ export function mcpRouter({ deps = {} } = {}) {
     if (s.scope === 'tenant') { if (!s.enabled) fail(404, 'not_found'); await setUserDisabled(req.user.id, s.id, !enabled); }
     else if (s.user_id === req.user.id) await getKnex()('mcp_servers').where({ id: s.id }).update({ enabled: +enabled });
     else fail(404, 'not_found');
-    audit(req.user.id, 'mcp.toggle', s.name, { enabled, scope: s.scope });
+    await audit(req.user.id, 'mcp.toggle', s.name, { enabled, scope: s.scope });
     res.json({ ok: true });
   });
 
@@ -45,19 +45,19 @@ export function mcpRouter({ deps = {} } = {}) {
     const b = validate(z.object({ name, url, headers, enabled: z.boolean().default(true) }), req.body);
     await publicUrl(b.url);
     const s = await createServer({ scope: 'user', userId: req.user.id, ...b });
-    audit(req.user.id, 'mcp.user.create', s.name, { host: new URL(s.url).host });
-    res.status(201).json(dto(s));
+    await audit(req.user.id, 'mcp.user.create', s.name, { host: new URL(s.url).host });
+    res.status(201).json(await dto(s));
   });
   route.put('/mcp/my-servers/:id', 'profile.mcp.edit', async (req, res) => {
     requireOwnAllowed();
     const s = await mine(req), b = validate(z.object({ name: name.optional(), url: url.optional(), headers, enabled: z.boolean().optional() }), req.body);
     if (b.url) await publicUrl(b.url);
     const out = await updateServer(s, b);
-    audit(req.user.id, 'mcp.user.update', out.row.name, { fields: Object.keys(b).filter((k) => k !== 'headers'), headersChanged: b.headers !== undefined });
+    await audit(req.user.id, 'mcp.user.update', out.row.name, { fields: Object.keys(b).filter((k) => k !== 'headers'), headersChanged: b.headers !== undefined });
     res.json({ ...dto(out.row), headersCleared: out.headersCleared });
   });
   route.delete('/mcp/my-servers/:id', 'profile.mcp.edit', async (req, res) => {
-    const s = await mine(req); await deleteServer(s.id); audit(req.user.id, 'mcp.user.delete', s.name); res.json({ ok: true });
+    const s = await mine(req); await deleteServer(s.id); await audit(req.user.id, 'mcp.user.delete', s.name); res.json({ ok: true });
   });
   route.post('/mcp/my-servers/:id/test', 'profile.mcp.edit', async (req, res) => { requireOwnAllowed(); const s = await mine(req); await publicUrl(s.url); res.json(await probe(s, deps)); });
 
@@ -69,20 +69,20 @@ export function mcpRouter({ deps = {} } = {}) {
     const b = validate(tenantBody, req.body);
     await checkTenantUrl(b.url, b.allowPrivate);
     const s = await createServer({ scope: 'tenant', ...b });
-    audit(req.user.id, 'mcp.tenant.create', s.name, { host: new URL(s.url).host, allowPrivate: b.allowPrivate });
-    res.status(201).json(dto(s));
+    await audit(req.user.id, 'mcp.tenant.create', s.name, { host: new URL(s.url).host, allowPrivate: b.allowPrivate });
+    res.status(201).json(await dto(s));
   });
   route.put('/admin/mcp-servers/:id', { perm: 'mcp.write', stepup: true }, async (req, res) => {
     const s = await row(req.params.id); if (s.scope !== 'tenant') fail(404, 'not_found');
     const b = validate(tenantBody.partial(), req.body);
     await checkTenantUrl(b.url ?? s.url, b.allowPrivate ?? !!s.allow_private);
     const out = await updateServer(s, b);
-    audit(req.user.id, 'mcp.tenant.update', out.row.name, { fields: Object.keys(b).filter((k) => k !== 'headers'), headersChanged: b.headers !== undefined });
+    await audit(req.user.id, 'mcp.tenant.update', out.row.name, { fields: Object.keys(b).filter((k) => k !== 'headers'), headersChanged: b.headers !== undefined });
     res.json({ ...dto(out.row), headersCleared: out.headersCleared });
   });
   route.delete('/admin/mcp-servers/:id', { perm: 'mcp.write', stepup: true }, async (req, res) => {
     const s = await row(req.params.id); if (s.scope !== 'tenant') fail(404, 'not_found');
-    await deleteServer(s.id); audit(req.user.id, 'mcp.tenant.delete', s.name); res.json({ ok: true });
+    await deleteServer(s.id); await audit(req.user.id, 'mcp.tenant.delete', s.name); res.json({ ok: true });
   });
   route.post('/admin/mcp-servers/:id/test', 'mcp.write', async (req, res) => {
     const s = await row(req.params.id); if (s.scope !== 'tenant') fail(404, 'not_found');

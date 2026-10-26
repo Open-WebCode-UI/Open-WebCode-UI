@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
-import { getDb } from './db/index.js';
+import { getKnex } from './db/index.js';
+import { insertId, trx } from './db/dialect.js';
 import { getSettings } from './settings.js';
 import { HttpError } from './http.js';
 import { readPreferences } from './preferences.js';
@@ -32,39 +33,41 @@ export function verifyPassword(pw, hash) {
   return ok && !!hash;
 }
 
-export function createLocalUser({ username, password, email = '', firstName = '', lastName = '', roles = [], isBreakGlass = false, mustChange = false }) {
+export async function createLocalUser({ username, password, email = '', firstName = '', lastName = '', roles = [], isBreakGlass = false, mustChange = false }) {
   checkPassword(password, username);
-  const db = getDb();
-  if (db.prepare("SELECT 1 FROM users WHERE source='local' AND username=?").get(username))
-    throw new HttpError(409, 'username_taken');
-  const r = db.prepare(`INSERT INTO users (source,username,email,first_name,last_name,display_name,password_hash,is_break_glass,must_change_password)
-    VALUES ('local',?,?,?,?,?,?,?,?)`).run(username, email, firstName, lastName, `${firstName} ${lastName}`.trim() || username,
-    hashPassword(password), isBreakGlass ? 1 : 0, mustChange ? 1 : 0);
-  const id = Number(r.lastInsertRowid);
-  setUserRoles(id, roles, 'manual');
+  const k = getKnex();
+  if (await k('users').where({ source: 'local', username }).first('id')) throw new HttpError(409, 'username_taken');
+  const id = await insertId(k('users'), {
+    source: 'local', username, email, first_name: firstName, last_name: lastName, display_name: `${firstName} ${lastName}`.trim() || username,
+    password_hash: hashPassword(password), is_break_glass: isBreakGlass ? 1 : 0, must_change_password: mustChange ? 1 : 0,
+  });
+  await setUserRoles(id, roles, 'manual');
   return id;
 }
 
-export function setUserRoles(userId, roleNames, source = 'manual') {
-  const db = getDb();
-  db.prepare('DELETE FROM user_roles WHERE user_id=? AND source=?').run(userId, source);
+export async function setUserRoles(userId, roleNames, source = 'manual') {
+  const k = getKnex();
+  const ids = [];
   for (const n of roleNames) {
-    const role = db.prepare('SELECT id FROM roles WHERE name=?').get(n);
+    const role = await k('roles').where({ name: n }).first('id');
     if (!role) throw new HttpError(400, 'unknown_role', { role: n });
-    db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id, source) VALUES (?,?,?)').run(userId, role.id, source);
+    ids.push(role.id);
   }
+  await trx(k, async (t) => {
+    await t('user_roles').where({ user_id: userId, source }).del();
+    if (ids.length) await t('user_roles').insert(ids.map((role_id) => ({ user_id: userId, role_id, source }))).onConflict(['user_id', 'role_id', 'source']).ignore();
+  });
 }
 
-export function userDto(u, { withPerms = false } = {}) {
-  const db = getDb();
+export async function userDto(u, { withPerms = false } = {}) {
   const dto = {
     id: u.id, source: u.source, username: u.username, email: u.email, firstName: u.first_name, lastName: u.last_name,
     displayName: u.display_name || [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email || u.username,
     isBreakGlass: !!u.is_break_glass, disabled: !!u.disabled, mfaEnrolled: !!u.mfa_enrolled, lastLogin: u.last_login,
-    mustChangePassword: !!u.must_change_password, roles: userRoleNames(u.id),
-    webauthnCount: db.prepare('SELECT COUNT(*) c FROM webauthn_credentials WHERE user_id=?').get(u.id).c,
+    mustChangePassword: !!u.must_change_password, roles: await userRoleNames(u.id),
+    webauthnCount: (await getKnex()('webauthn_credentials').where({ user_id: u.id }).count({ c: '*' }).first()).c,
   };
   if (withPerms) dto.preferences = readPreferences(u);
-  if (withPerms) dto.permissions = [...userPermissions(u.id)];
+  if (withPerms) dto.permissions = [...await userPermissions(u.id)];
   return dto;
 }

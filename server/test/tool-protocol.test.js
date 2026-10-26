@@ -56,7 +56,7 @@ describe('recovering from a tool call written as text', () => {
     expect(t.events.some((e) => e.type === 'done')).toBe(false);
   });
   it('still accepts an ordinary text answer', async () => {
-    expect((await mk([[{ type: 'text', text: 'The answer is 42.' }]]).run()).stopped).toBe('complete');
+    expect((await (await mk([[{ type: 'text', text: 'The answer is 42.' }]])).run()).stopped).toBe('complete');
   });
   it('returns schema errors for a conclude with missing arguments, so the model can retry', async () => {
     const t = mk([conclude({ status: 'complete' }), conclude({ summary: 'Fixed', status: 'complete' })]);

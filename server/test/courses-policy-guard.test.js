@@ -1,10 +1,11 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import WebSocket from 'ws';
 import { freshDb, createApp, login, makeRole } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { saveSettings, getSettings } from '../src/settings.js';
 import { registry } from '../src/http.js';
 import { TerminalManager } from '../src/terminal/manager.js';
@@ -14,12 +15,12 @@ import { PRESETS, deniedPermissions } from '../src/courses/policy.js';
 let app; let inst; let stu; let mgr;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LEARNER = ['project.read', 'project.write', 'project.delete', 'files.read', 'files.write', 'agent.plan', 'agent.act', 'agent.shell.run', 'terminal.use', 'git.commit', 'git.push', 'download.code', 'checkpoint.read', 'checkpoint.write', 'provider.use', 'course.learn', 'memory.use'];
-beforeEach(() => {
-  freshDb(); mgr = new TerminalManager({ idleMs: 50 });
-  makeRole('learner', LEARNER);
+beforeEach(async () => {
+  await freshDb(); mgr = new TerminalManager({ idleMs: 50 });
+  await makeRole('learner', LEARNER);
   app = createApp({ deps: { terminals: mgr } });
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['learner'] });
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['learner'] });
 });
 afterEach(() => mgr.killAll());
 
@@ -32,7 +33,7 @@ async function workspace(policy) {
   const att = (await stu.post(`/api/courses/${course.id}/assessments/${quiz.id}/attempts`)).body;
   return { course, att, pid: att.questions[0].exercise.workspace.projectId, submit: () => stu.post(`/api/courses/${course.id}/attempts/${att.id}/submit`).send({ answers: {} }) };
 }
-const dirOf = (pid) => getDb().prepare('SELECT dir FROM projects WHERE id=?').get(pid).dir;
+const dirOf = async (pid) => (await sqlDb().prepare('SELECT dir FROM projects WHERE id=?').get(pid)).dir;
 
 describe('rules reach every project route', () => {
   it('a frozen workspace refuses every project route that changes things, and the test fails for any route nobody classified', async () => {
@@ -78,7 +79,7 @@ describe('an exercise in progress', () => {
   });
   it('protected files and folders cannot be edited, moved, deleted or replaced through the file API', async () => {
     const { pid } = await workspace({ ...PRESETS.guided, protectedFiles: ['tests', 'answer.txt'] });
-    const dir = dirOf(pid); fs.mkdirSync(path.join(dir, 'tests/deep'), { recursive: true }); fs.writeFileSync(path.join(dir, 'tests/deep/t.js'), 'orig'); fs.writeFileSync(path.join(dir, 'answer.txt'), 'orig');
+    const dir = await dirOf(pid); fs.mkdirSync(path.join(dir, 'tests/deep'), { recursive: true }); fs.writeFileSync(path.join(dir, 'tests/deep/t.js'), 'orig'); fs.writeFileSync(path.join(dir, 'answer.txt'), 'orig');
     const code = async (r) => (await r).body.error;
     expect(await code(stu.put(`/api/projects/${pid}/file`).send({ path: 'tests/deep/t.js', content: 'x' }))).toBe('protected_file');
     expect(await code(stu.put(`/api/projects/${pid}/file`).send({ path: 'tests/new.js', content: 'x' }))).toBe('protected_file');
@@ -117,7 +118,7 @@ describe('showing the rules', () => {
     expect(att.questions[0].exercise.rules.join(' ')).toMatch(/30 minutes/); // learners read the rules before they start
     await submit();
     expect((await stu.get(`/api/projects/${pid}/exercise-policy`)).body).toMatchObject({ locked: true, submitted: true });
-    const other = login(app, { username: 'student2', roles: ['learner'] });
+    const other = await login(app, { username: 'student2', roles: ['learner'] });
     expect((await other.get(`/api/projects/${pid}/exercise-policy`)).status).toBe(404);
   });
   it('previews what a role could do under a set of rules', async () => {
@@ -143,7 +144,7 @@ describe('terminal WebSocket', () => {
     ws.on('open', () => resolve({ ws, msgs, status: 101 })); ws.on('unexpected-response', (_q, res) => resolve({ ws, msgs, status: res.statusCode })); ws.on('error', () => {});
   });
   beforeEach(async () => {
-    saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
+    await saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
     server = http.createServer(app); attachTerminalWs(server, { manager: mgr, sweepMs: 100 }); await new Promise((r) => server.listen(0, r)); port = server.address().port;
   });
   afterEach(() => new Promise((r) => { mgr.killAll(); server.closeAllConnections?.(); server.close(r); }));
@@ -160,7 +161,7 @@ describe('terminal WebSocket', () => {
     const { att, pid } = await workspace({ ...PRESETS.full, timeLimitMin: 5 });
     const id = (await stu.post('/api/terminal/sessions').send({ projectId: pid })).body.id;
     expect((await connect(id)).status).toBe(101);
-    getDb().prepare('UPDATE attempts SET started_at=started_at-900 WHERE id=?').run(att.id);
+    (await sqlDb().prepare('UPDATE attempts SET started_at=started_at-900 WHERE id=?').run(att.id));
     expect((await connect(id)).status).toBe(404);
   });
 });

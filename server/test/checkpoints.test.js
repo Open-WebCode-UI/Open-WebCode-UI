@@ -1,3 +1,4 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,9 +55,9 @@ describe('checkpoints', () => {
 
 describe('checkpoint API', () => {
   it('create/list/restore with RBAC, no step-up, and active-turn protection', async () => {
-    freshDb(); const app = createApp();
-    makeRole('viewer', ['project.read', 'project.write', 'files.read', 'files.write', 'checkpoint.read']);
-    const dev = login(app, { username: 'devuser' }), viewer = login(app, { username: 'viewer1', roles: ['viewer'] });
+    await freshDb(); const app = createApp();
+    await makeRole('viewer', ['project.read', 'project.write', 'files.read', 'files.write', 'checkpoint.read']);
+    const dev = await login(app, { username: 'devuser' }), viewer = await login(app, { username: 'viewer1', roles: ['viewer'] });
     const p = (await dev.post('/api/projects').send({ name: 'demo' })).body;
     await dev.put(`/api/projects/${p.id}/file`).send({ path: 'a.txt', content: 'one' });
     const cp = (await dev.post(`/api/projects/${p.id}/checkpoints`).send({ label: 'init' })).body;
@@ -71,7 +72,7 @@ describe('checkpoint API', () => {
     expect((await viewer.post(`/api/projects/${vp.id}/checkpoints`).send({ label: 'x' })).status).toBe(403);
     expect((await viewer.post(`/api/projects/${vp.id}/checkpoints/${cp.id}/restore`)).status).toBe(403);
     // restore needs no step-up verification
-    const stale = login(app, { username: 'staleuser', stepup: false });
+    const stale = await login(app, { username: 'staleuser', stepup: false });
     const sp = (await stale.post('/api/projects').send({ name: 'sp' })).body;
     const scp = (await stale.post(`/api/projects/${sp.id}/checkpoints`).send({ label: 'a' })).body;
     const r = await stale.post(`/api/projects/${sp.id}/checkpoints/${scp.id}/restore`);
@@ -84,21 +85,20 @@ describe('checkpoint API', () => {
 
 describe('checkpoint rollback of sessions', () => {
   it('hides later messages from the model, shows them grayed out, and brings them back on roll-forward', async () => {
-    const { getDb } = await import('../src/db/index.js');
     const { loadMessages, buildTimeline, recordCheckpointMarks, rollBackMessages, copyCheckpointMarks } = await import('../src/sessions.js');
-    freshDb();
-    const db = getDb();
-    const app = createApp(), dev = login(app, { username: 'devuser' });
-    const pid = (await dev.post('/api/projects').send({ name: 'demo' })).body.id, uid = db.prepare('SELECT id FROM users WHERE username=?').get('devuser').id;
-    const conv = db.prepare("INSERT INTO conversations (user_id, project_id, kind) VALUES (?,?,'agent')").run(uid, pid).lastInsertRowid;
-    const add = (role, content) => db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)').run(conv, role, JSON.stringify({ role, content }));
-    add('user', 'one'); add('assistant', 'reply one');
+    await freshDb();
+    const db = sqlDb();
+    const app = createApp(), dev = await login(app, { username: 'devuser' });
+    const pid = (await dev.post('/api/projects').send({ name: 'demo' })).body.id, uid = (await db.prepare('SELECT id FROM users WHERE username=?').get('devuser')).id;
+    const conv = (await db.prepare("INSERT INTO conversations (user_id, project_id, kind) VALUES (?,?,'agent')").run(uid, pid)).lastInsertRowid;
+    const add = async (role, content) => (await db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?,?,?)').run(conv, role, JSON.stringify({ role, content })));
+    await add('user', 'one'); await add('assistant', 'reply one');
     await recordCheckpointMarks(pid, 'cp1');
-    add('user', 'two'); add('assistant', 'reply two');
+    await add('user', 'two'); await add('assistant', 'reply two');
     await recordCheckpointMarks(pid, 'before');
     await rollBackMessages('cp1'); await copyCheckpointMarks('cp1', 'after');
     expect((await loadMessages(conv)).map((m) => m.content)).toEqual(['one', 'reply one']);
-    const rows = db.prepare('SELECT role, content, archived, kind, rolled_back FROM messages ORDER BY id').all();
+    const rows = (await db.prepare('SELECT role, content, archived, kind, rolled_back FROM messages ORDER BY id').all());
     expect(buildTimeline(rows).map((i) => [i.text, !!i.rolledBack])).toEqual([['one', false], ['reply one', false], ['two', true], ['reply two', true]]);
     await rollBackMessages('before');
     expect((await loadMessages(conv)).map((m) => m.content)).toEqual(['one', 'reply one', 'two', 'reply two']);

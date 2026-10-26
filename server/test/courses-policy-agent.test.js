@@ -1,8 +1,9 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { freshDb, createApp, login, addProvider, fakeAdapterFactory } from './helpers.js';
-import { getDb } from '../src/db/index.js';
+
 import { PRESETS } from '../src/courses/policy.js';
 import { getToolsFor } from '../src/agent/tools.js';
 
@@ -10,11 +11,11 @@ const parseSse = (t) => t.split('\n\n').filter((l) => l.startsWith('data: ')).ma
 const turn = (u, body) => u.post('/api/agent/turn').send(body).buffer(true).parse((res, cb) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => cb(null, d)); });
 
 let modelId; let seen; let inst; let stu; let app; let course; let quiz;
-function setup(script = []) {
-  freshDb(); modelId = addProvider(); seen = [];
+async function setup(script = []) {
+  await freshDb(); modelId = await addProvider(); seen = [];
   app = createApp({ deps: { adapterFactory: fakeAdapterFactory(script, seen) } });
-  inst = login(app, { username: 'teacher1', roles: ['instructor'] });
-  stu = login(app, { username: 'student1', roles: ['developer'] });
+  inst = await login(app, { username: 'teacher1', roles: ['instructor'] });
+  stu = await login(app, { username: 'student1', roles: ['developer'] });
 }
 // An exercise with the given rules, started by the learner; returns the workspace project and attempt.
 async function exercise(policy) {
@@ -32,17 +33,17 @@ const startOf = (res) => parseSse(res.body).find((e) => e.type === 'start');
 
 describe('agent turns in an exercise workspace', () => {
   it('Plan only refuses Act, even when the request claims it, and still plans', async () => {
-    setup([[{ type: 'text', text: 'plan' }]]);
+    await setup([[{ type: 'text', text: 'plan' }]]);
     const { pid } = await exercise(PRESETS.plan_only);
     const denied = await turn(stu, act(pid));
     expect(denied.status).toBe(403); expect(JSON.parse(denied.body)).toMatchObject({ error: 'exercise_policy', reason: 'mode' });
     expect((await turn(stu, { ...act(pid), mode: 'plan' })).status).toBe(200);
     expect(seen[0].tools).not.toContain('spawn_agent'); // subagents are off in every preset but Full
-    expect(getDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='exercise.policy_denied'").get().c).toBe(1);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='exercise.policy_denied'").get()).c).toBe(1);
   });
 
   it('Guided needs a plan the agent proposed before Act, takes away the shell, and consumes the plan', async () => {
-    setup([[{ type: 'tool_call', id: 'p1', name: 'propose_plan', args: { plan: '# Plan\n1. write notes' } }], [{ type: 'text', text: 'done' }], [{ type: 'text', text: 'again' }]]);
+    await setup([[{ type: 'tool_call', id: 'p1', name: 'propose_plan', args: { plan: '# Plan\n1. write notes' } }], [{ type: 'text', text: 'done' }], [{ type: 'text', text: 'again' }]]);
     const { pid } = await exercise(PRESETS.guided);
     const no = await turn(stu, act(pid));
     expect(JSON.parse(no.body)).toMatchObject({ error: 'plan_required' });
@@ -60,41 +61,41 @@ describe('agent turns in an exercise workspace', () => {
   });
 
   it('after submit the workspace is frozen for the agent, and so is a lapsed time limit', async () => {
-    setup([[{ type: 'text', text: 'ok' }]]);
+    await setup([[{ type: 'text', text: 'ok' }]]);
     const { att, pid } = await exercise({ ...PRESETS.full, timeLimitMin: 5 });
     expect((await turn(stu, act(pid))).status).toBe(200);
-    getDb().prepare('UPDATE attempts SET started_at=started_at-600 WHERE id=?').run(att.id);
+    (await sqlDb().prepare('UPDATE attempts SET started_at=started_at-600 WHERE id=?').run(att.id));
     expect(JSON.parse((await turn(stu, act(pid))).body)).toMatchObject({ error: 'exercise_policy', reason: 'time_limit' });
-    getDb().prepare('UPDATE attempts SET started_at=started_at+600 WHERE id=?').run(att.id);
+    (await sqlDb().prepare('UPDATE attempts SET started_at=started_at+600 WHERE id=?').run(att.id));
     await stu.post(`/api/courses/${course.id}/attempts/${att.id}/submit`).send({ answers: {} });
     expect(JSON.parse((await turn(stu, act(pid))).body)).toMatchObject({ reason: 'submitted' });
   });
 
   it('stops at the message limit and the spending limit', async () => {
-    setup([[{ type: 'text', text: 'one' }]]);
+    await setup([[{ type: 'text', text: 'one' }]]);
     const { pid } = await exercise({ ...PRESETS.full, maxMessages: 1, maxCost: 1 });
     const first = await turn(stu, act(pid));
     expect(first.status).toBe(200);
     expect((await turn(stu, act(pid))).status).toBe(429);
     expect(JSON.parse((await turn(stu, act(pid))).body).error).toBe('exercise_message_limit');
-    getDb().prepare('DELETE FROM messages').run(); // pretend the messages are not the problem; now only spend is
-    getDb().prepare("INSERT INTO usage (conversation_id, kind, cost) VALUES (?, 'agent', 2)").run(startOf(first).conversationId);
+    (await sqlDb().prepare('DELETE FROM messages').run()); // pretend the messages are not the problem; now only spend is
+    (await sqlDb().prepare("INSERT INTO usage (conversation_id, kind, cost) VALUES (?, 'agent', 2)").run(startOf(first).conversationId));
     expect(JSON.parse((await turn(stu, act(pid))).body).error).toBe('exercise_budget_exceeded');
   });
 
   it('caps agent steps per message and pins the model whatever the browser asks for', async () => {
-    setup([[{ type: 'tool_call', id: 't1', name: 'list_dir', args: { path: '.' } }], [{ type: 'tool_call', id: 't2', name: 'list_dir', args: { path: '.' } }], [{ type: 'text', text: 'never reached' }]]);
-    const pinned = Number(getDb().prepare("INSERT INTO models (provider_id, model_id, label) VALUES (1, 'fake-model-2', 'Pinned')").run().lastInsertRowid);
+    await setup([[{ type: 'tool_call', id: 't1', name: 'list_dir', args: { path: '.' } }], [{ type: 'tool_call', id: 't2', name: 'list_dir', args: { path: '.' } }], [{ type: 'text', text: 'never reached' }]]);
+    const pinned = Number((await sqlDb().prepare("INSERT INTO models (provider_id, model_id, label) VALUES (1, 'fake-model-2', 'Pinned')").run()).lastInsertRowid);
     const { pid } = await exercise({ ...PRESETS.full, maxSteps: 1, modelId: pinned });
     const res = await turn(stu, act(pid));
     expect(seen).toHaveLength(1); expect(res.body).toMatch(/maximum number of steps/);
-    expect(getDb().prepare('SELECT model_row_id FROM usage ORDER BY id DESC').get().model_row_id).toBe(pinned);
+    expect((await sqlDb().prepare('SELECT model_row_id FROM usage ORDER BY id DESC').get()).model_row_id).toBe(pinned);
   });
 
   it('protected files cannot be changed by the agent, but other files can', async () => {
-    setup([[{ type: 'tool_call', id: 'a', name: 'write_file', args: { path: 'tests/check.js', content: 'cheat' } }, { type: 'tool_call', id: 'b', name: 'write_file', args: { path: 'app.js', content: 'ok' } }, { type: 'tool_call', id: 'c', name: 'delete_file', args: { path: 'tests' } }], [{ type: 'text', text: 'done' }]]);
+    await setup([[{ type: 'tool_call', id: 'a', name: 'write_file', args: { path: 'tests/check.js', content: 'cheat' } }, { type: 'tool_call', id: 'b', name: 'write_file', args: { path: 'app.js', content: 'ok' } }, { type: 'tool_call', id: 'c', name: 'delete_file', args: { path: 'tests' } }], [{ type: 'text', text: 'done' }]]);
     const { pid } = await exercise({ ...PRESETS.guided, requirePlan: false, protectedFiles: ['tests'] });
-    const dir = getDb().prepare('SELECT dir FROM projects WHERE id=?').get(pid).dir;
+    const dir = (await sqlDb().prepare('SELECT dir FROM projects WHERE id=?').get(pid)).dir;
     fs.mkdirSync(path.join(dir, 'tests')); fs.writeFileSync(path.join(dir, 'tests/check.js'), 'original');
     const res = parseSse((await turn(stu, act(pid))).body).filter((e) => e.type === 'tool_result');
     expect(res[0].result).toMatch(/protected by this exercise/); expect(res[2].result).toMatch(/protected by this exercise/);
@@ -103,7 +104,7 @@ describe('agent turns in an exercise workspace', () => {
   });
 
   it('ordinary projects are not affected by any exercise rules', async () => {
-    setup([[{ type: 'text', text: 'fine' }]]);
+    await setup([[{ type: 'text', text: 'fine' }]]);
     await exercise(PRESETS.plan_only);
     const p = (await stu.post('/api/projects').send({ name: 'mine' })).body;
     expect((await turn(stu, act(p.id))).status).toBe(200);

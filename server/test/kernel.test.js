@@ -5,7 +5,7 @@ import { KernelManager } from '../src/terminal/kernel.js';
 import { freshDb, createApp, login, makeRole, tmpDir } from './helpers.js';
 import { saveSettings, getSettings } from '../src/settings.js';
 
-const SHELL = () => saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
+const SHELL = async () => saveSettings('general', { ...getSettings('general'), execMode: 'workspace_shell' });
 let mgr;
 beforeEach(() => { mgr = new KernelManager({ idleMs: 50 }); });
 afterEach(() => mgr.killAll());
@@ -79,9 +79,9 @@ describe('kernel REST API', () => {
   const sse = (req) => req.buffer(true).parse((res, cb) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => cb(null, d)); });
   const events = (r) => r.body.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.replace(/^data: /, '')));
   beforeEach(async () => {
-    freshDb(); app = createApp({ deps: { kernels: mgr } });
-    makeRole('shellers', ['project.read', 'project.write', 'files.read', 'files.write', 'terminal.use']);
-    shellUser = login(app, { username: 'shelluser', roles: ['shellers'] });
+    await freshDb(); app = createApp({ deps: { kernels: mgr } });
+    await makeRole('shellers', ['project.read', 'project.write', 'files.read', 'files.write', 'terminal.use']);
+    shellUser = await login(app, { username: 'shelluser', roles: ['shellers'] });
     project = (await shellUser.post('/api/projects').send({ name: 'nb1' })).body;
   });
   it('is off until shell mode is enabled', async () => {
@@ -89,17 +89,17 @@ describe('kernel REST API', () => {
     expect(r.status).toBe(403); expect(r.body.error).toBe('shell_disabled');
   });
   it('needs terminal.use and recent step-up, and rejects other file types and paths outside the project', async () => {
-    SHELL();
-    const dev = login(app, { username: 'devperson' }); const dp = (await dev.post('/api/projects').send({ name: 'dp' })).body;
+    await SHELL();
+    const dev = await login(app, { username: 'devperson' }); const dp = (await dev.post('/api/projects').send({ name: 'dp' })).body;
     expect((await dev.post('/api/terminal/kernel/run').send({ projectId: dp.id, path: 'a.ipynb', code: '1' })).status).toBe(403);
-    const stale = login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const sp = (await stale.post('/api/projects').send({ name: 'sp' })).body;
+    const stale = await login(app, { username: 'stale1', roles: ['shellers'], stepup: false }); const sp = (await stale.post('/api/projects').send({ name: 'sp' })).body;
     expect((await stale.post('/api/terminal/kernel/run').send({ projectId: sp.id, path: 'a.ipynb', code: '1' })).body.error).toBe('mfa_required');
     expect((await shellUser.post('/api/terminal/kernel/run').send({ projectId: project.id, path: 'a.py', code: '1' })).status).toBe(400);
     expect((await shellUser.post('/api/terminal/kernel/run').send({ projectId: project.id, path: '../x.ipynb', code: '1' })).status).toBe(400);
-    expect((await login(app, { username: 'other3', roles: ['shellers'] }).post('/api/terminal/kernel/run').send({ projectId: project.id, path: 'a.ipynb', code: '1' })).status).toBe(404);
+    expect((await (await login(app, { username: 'other3', roles: ['shellers'] })).post('/api/terminal/kernel/run').send({ projectId: project.id, path: 'a.ipynb', code: '1' })).status).toBe(404);
   });
   it('streams a cell\'s events, keeps state in the same notebook, and restarts on request', async () => {
-    SHELL();
+    await SHELL();
     const run = (code) => sse(shellUser.post('/api/terminal/kernel/run').send({ projectId: project.id, path: 'a.ipynb', code }));
     const a = events(await run('z = 5\nprint("out")')); expect(a.filter((e) => e.t === 'stream').map((e) => e.text).join('')).toBe('out\n'); expect(a.at(-1).t).toBe('done');
     expect(events(await run('z * 2')).find((e) => e.t === 'result').data['text/plain']).toBe('10');

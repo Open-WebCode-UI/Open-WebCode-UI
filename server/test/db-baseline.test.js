@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createKnex } from '../src/db/knex.js';
 import { migrateToLatest, migrationStatus } from '../src/db/migrator.js';
-import { openDb } from '../src/db/index.js';
+import { legacySchema, legacyMigrate } from '../src/db/legacy-migrate.js';
 
 const open = [];
 const mem = () => { const k = createKnex({ client: 'sqlite', file: ':memory:' }); open.push(k); return k; };
@@ -22,7 +22,8 @@ function shape(db) {
 
 describe('baseline migration', () => {
   it('creates the same tables and columns as the legacy schema', async () => {
-    const legacy = openDb(':memory:'); // schema.sql + every migrate() step
+    const legacy = new Database(':memory:'); // schema.sql + every migrate() step, as the pre-Knex code built it
+    legacy.exec(legacySchema); legacyMigrate(legacy);
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'base-')), 'fresh.db');
     const k = createKnex({ client: 'sqlite', file }); open.push(k);
     await migrateToLatest(k);

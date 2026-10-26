@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
 
 const setup = async () => {
-  freshDb(); const app = createApp();
-  const admin = login(app, { username: 'adm', roles: ['administrator'] }), dev = login(app, { username: 'dev1', roles: ['developer'] });
+  await freshDb(); const app = createApp();
+  const admin = await login(app, { username: 'adm', roles: ['administrator'] }), dev = await login(app, { username: 'dev1', roles: ['developer'] });
   const p = (await admin.post('/api/admin/providers').send({ name: 'Acme', type: 'openai', secret: 'k' })).body.id;
   const m = (await admin.post(`/api/admin/providers/${p}/models`).send({ modelId: 'm1' })).body.models[0].id;
   return { admin, dev, p, m };

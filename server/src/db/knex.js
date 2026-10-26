@@ -44,15 +44,3 @@ export function createKnex(c) {
 }
 
 export const engineOf = (knex) => ({ 'better-sqlite3': 'sqlite', pg: 'postgres', mysql2: 'mariadb' })[knex.client.config.client];
-
-/**
- * A Knex handle that runs on an existing better-sqlite3 connection. While call sites move from getDb() to getKnex() both see the same
- * database (including `:memory:` ones, which exist per connection). Transitional: removed with getDb() when the last call site is converted.
- */
-export function knexOnConnection(conn) {
-  const k = knexFactory({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true, pool: { min: 1, max: 1 } });
-  k.client.acquireConnection = async () => conn;
-  k.client.releaseConnection = async () => {};
-  k.client.destroy = async () => {};
-  return k;
-}

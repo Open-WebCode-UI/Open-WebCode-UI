@@ -1,14 +1,15 @@
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { freshDb, createApp, login } from './helpers.js';
 import { bedrockAdapter } from '../src/llm/bedrock.js';
 import { openaiAdapter } from '../src/llm/openai.js';
 import { decrypt } from '../src/crypto.js';
-import { getDb } from '../src/db/index.js';
+
 
 let app, admin, seen;
 const factory = (impl) => (row) => { seen.push(row); return { listModels: impl || (async () => ['b-model', 'a-model']) }; };
 const lookup = async (h) => [{ address: ['localhost', 'internal.corp'].includes(h) ? '127.0.0.1' : '93.184.216.34' }]; // hermetic: no real DNS
-const setup = (impl) => { freshDb(); seen = []; app = createApp({ deps: { adapterFactory: factory(impl), lookup } }); admin = login(app, { username: 'provadmin', roles: ['administrator'] }); };
+const setup = async (impl) => { await freshDb(); seen = []; app = createApp({ deps: { adapterFactory: factory(impl), lookup } }); admin = await login(app, { username: 'provadmin', roles: ['administrator'] }); };
 
 describe('POST /api/admin/providers/discover', () => {
   beforeEach(() => setup());
@@ -17,12 +18,12 @@ describe('POST /api/admin/providers/discover', () => {
     const r = await admin.post('/api/admin/providers/discover').send({ type: 'openai', config: { baseUrl: 'https://api.example.com/v1' }, secret: 'sk-live-123' });
     expect(r.body).toEqual({ ok: true, models: ['b-model', 'a-model'] });
     expect(seen[0].type).toBe('openai'); expect(decrypt(seen[0].secret_enc)).toBe('sk-live-123');
-    expect(getDb().prepare('SELECT COUNT(*) c FROM providers').get().c).toBe(0);
-    expect(getDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='provider.discover'").get().c).toBe(1);
+    expect((await sqlDb().prepare('SELECT COUNT(*) c FROM providers').get()).c).toBe(0);
+    expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='provider.discover'").get()).c).toBe(1);
   });
 
   it('requires provider.write', async () => {
-    const dev = login(app, { username: 'devperson' });
+    const dev = await login(app, { username: 'devperson' });
     expect((await dev.post('/api/admin/providers/discover').send({ type: 'openai', config: {} })).status).toBe(403);
   });
 
@@ -48,7 +49,7 @@ describe('POST /api/admin/providers/discover', () => {
   });
 
   it('reports failures without leaking the key', async () => {
-    setup(async () => { throw new Error('401 Incorrect API key provided: sk-live-123'); });
+    await setup(async () => { throw new Error('401 Incorrect API key provided: sk-live-123'); });
     const r = await admin.post('/api/admin/providers/discover').send({ type: 'openai', config: { baseUrl: 'https://api.example.com/v1' }, secret: 'sk-live-123' });
     expect(r.status).toBe(200); expect(r.body.ok).toBe(false);
     expect(r.body.error).toContain('Incorrect API key'); expect(r.body.error).not.toContain('sk-live-123');

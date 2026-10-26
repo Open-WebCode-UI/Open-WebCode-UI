@@ -42,7 +42,7 @@ export async function buildStatus({ req, project = null, rm = null, adapter = nu
       now, model: rm ? { provider: rm.provider.name, type: rm.provider.type, model: rm.model.label || rm.model.model_id, reachable } : null,
     },
     server: { name: general.appName, url: config.baseUrl, secure: config.baseUrl.startsWith('https://'), shell: general.execMode === 'workspace_shell' ? 'enabled' : 'files only' },
-    user: { displayName: u.display_name || u.username || u.email, username: u.username || null, email: u.email || null, roles: userRoleNames(u.id), mustChangePassword: !!u.must_change_password },
+    user: { displayName: u.display_name || u.username || u.email, username: u.username || null, email: u.email || null, roles: await userRoleNames(u.id), mustChangePassword: !!u.must_change_password },
     project: null,
     features: { mcpServers: (await activeServers(u.id)).length, memory: await activeScopes(u.id, project?.id) },
   };

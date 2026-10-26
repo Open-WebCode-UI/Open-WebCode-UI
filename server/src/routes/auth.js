@@ -21,7 +21,7 @@ export function authRouter() {
 
   route.get('/me', 'partial', async (req, res) => {
     const full = req.session.stage === 'full';
-    const user = userDto(req.user, { withPerms: full });
+    const user = await userDto(req.user, { withPerms: full });
     // Lets the navbar hide Courses from learners who have nothing to take.
     if (full && user) user.hasCourses = (await listLearnerCourses(req.user.id)).length > 0;
     res.json({ stage: req.session.stage, csrf: req.session.csrf, user, stepup: stepupOk(req) });
@@ -38,7 +38,7 @@ export function authRouter() {
     const ok = verifyPassword(password, u?.password_hash); // constant-ish time even for unknown users
     const t = now();
     if (!u || u.disabled || (sec.breakGlassOnly && !u.is_break_glass) || u.locked_until > t) {
-      audit(u?.id ?? null, 'auth.local.denied', username, { reason: !u ? 'unknown' : u.locked_until > t ? 'locked' : 'policy', ip: req.ip });
+      await audit(u?.id ?? null, 'auth.local.denied', username, { reason: !u ? 'unknown' : u.locked_until > t ? 'locked' : 'policy', ip: req.ip });
       return generic();
     }
     if (!ok) {
@@ -46,9 +46,9 @@ export function authRouter() {
       if (fails >= sec.lockoutThreshold) {
         const secs = Math.min(sec.lockoutMinutes * 60 * 2 ** u.lockouts, 86400);
         await k('users').where({ id: u.id }).update({ failed_attempts: 0, lockouts: k.raw('lockouts + 1'), locked_until: t + secs });
-        audit(u.id, 'auth.local.locked', username, { seconds: secs });
+        await audit(u.id, 'auth.local.locked', username, { seconds: secs });
       } else await k('users').where({ id: u.id }).update({ failed_attempts: fails });
-      audit(u.id, 'auth.local.failed', username, { ip: req.ip });
+      await audit(u.id, 'auth.local.failed', username, { ip: req.ip });
       return generic();
     }
     await k('users').where({ id: u.id }).update({ failed_attempts: 0, lockouts: 0, locked_until: 0 });
@@ -58,7 +58,7 @@ export function authRouter() {
     const s = await createSession(u.id, { stage, req, mfaSatisfied: false, stepup: stage === 'full' });
     if (stage === 'full') await k('users').where({ id: u.id }).update({ last_login: t });
     setSessionCookie(res, s.id);
-    audit(u.id, 'auth.local.password_ok', username, { stage, ip: req.ip, breakGlass: !!u.is_break_glass });
+    await audit(u.id, 'auth.local.password_ok', username, { stage, ip: req.ip, breakGlass: !!u.is_break_glass });
     res.json({ stage, csrf: s.csrf });
   });
 
@@ -67,7 +67,7 @@ export function authRouter() {
     const { code } = validate(z.object({ code: z.string().max(32) }), req.body);
     const how = await verifySecondFactor(req.user.id, code.trim());
     if (!how) {
-      audit(req.user.id, 'auth.mfa.failed', req.user.username, { ip: req.ip });
+      await audit(req.user.id, 'auth.mfa.failed', req.user.username, { ip: req.ip });
       if (!hit(`mfa-fail:${req.user.id}`, 5, 15 * 60_000)) { await revokeSession(req.session.id); fail(429, 'too_many_attempts'); }
       fail(401, 'invalid_code');
     }
@@ -80,7 +80,7 @@ export function authRouter() {
     const s = await rotateSession(req.session.id);
     await k('users').where({ id: req.user.id }).update({ last_login: t });
     setSessionCookie(res, s.id);
-    audit(req.user.id, 'auth.mfa.ok', req.user.username, { method: how });
+    await audit(req.user.id, 'auth.mfa.ok', req.user.username, { method: how });
     res.json({ stage: 'full', csrf: s.csrf });
   }
 
@@ -97,7 +97,7 @@ export function authRouter() {
     const { code } = validate(z.object({ code: z.string().regex(/^\d{6}$/) }), req.body);
     const codes = await confirmTotp(req.user.id, code);
     if (!codes) fail(400, 'invalid_code');
-    audit(req.user.id, 'auth.mfa.enrolled', req.user.username, { method: 'totp' });
+    await audit(req.user.id, 'auth.mfa.enrolled', req.user.username, { method: 'totp' });
     const wasEnroll = req.session.stage === 'enroll';
     let csrf = req.session.csrf;
     if (wasEnroll) {
@@ -134,7 +134,7 @@ export function authRouter() {
       user_id: req.user.id, credential_id: c.id, public_key: b64u(c.publicKey), counter: c.counter, transports: JSON.stringify(c.transports || []), name: String(req.body?.name || 'Passkey').slice(0, 60),
     });
     await getKnex()('users').where({ id: req.user.id }).update({ mfa_enrolled: 1 });
-    audit(req.user.id, 'auth.mfa.enrolled', req.user.username, { method: 'webauthn' });
+    await audit(req.user.id, 'auth.mfa.enrolled', req.user.username, { method: 'webauthn' });
     let csrf = req.session.csrf;
     if (req.session.stage === 'enroll') {
       await getKnex()('sessions').where({ id: req.session.id }).update({ stage: 'full', mfa_satisfied: 1, stepup_at: now() });
@@ -161,7 +161,7 @@ export function authRouter() {
       response: req.body, expectedChallenge: req.session.webauthn_challenge, expectedOrigin: rp().origin, expectedRPID: rp().rpID,
       credential: { id: row.credential_id, publicKey: Buffer.from(row.public_key, 'base64url'), counter: row.counter, transports: JSON.parse(row.transports) },
     }).catch(() => null);
-    if (!v?.verified) { audit(req.user.id, 'auth.mfa.failed', req.user.username, { method: 'webauthn' }); fail(401, 'webauthn_failed'); }
+    if (!v?.verified) { await audit(req.user.id, 'auth.mfa.failed', req.user.username, { method: 'webauthn' }); fail(401, 'webauthn_failed'); }
     await getKnex()('webauthn_credentials').where({ id: row.id }).update({ counter: v.authenticationInfo.newCounter });
     if (req.session.stage === 'mfa') return completeMfa(req, res, 'webauthn');
     await getKnex()('sessions').where({ id: req.session.id }).update({ stepup_at: now() });
@@ -173,7 +173,7 @@ export function authRouter() {
     if (req.user.source === 'saml') return res.json({ reauth: `/auth/saml/login?forceAuthn=1&relay=${encodeURIComponent('/')}` });
     const { code } = validate(z.object({ code: z.string().max(32) }), req.body);
     if (!(await verifySecondFactor(req.user.id, code.trim()))) {
-      audit(req.user.id, 'auth.stepup.failed', req.user.username);
+      await audit(req.user.id, 'auth.stepup.failed', req.user.username);
       fail(401, 'invalid_code');
     }
     await getKnex()('sessions').where({ id: req.session.id }).update({ stepup_at: now() });
@@ -183,7 +183,7 @@ export function authRouter() {
   route.post('/logout', 'partial', async (req, res) => {
     await revokeSession(req.session.id);
     clearSessionCookie(res);
-    audit(req.user.id, 'auth.logout', req.user.username);
+    await audit(req.user.id, 'auth.logout', req.user.username);
     res.json({ ok: true });
   });
 
@@ -194,7 +194,7 @@ export function authRouter() {
     checkPassword(next, req.user.username);
     await getKnex()('users').where({ id: req.user.id }).update({ password_hash: hashPassword(next), must_change_password: 0 });
     await revokeUserSessions(req.user.id, req.session.id);
-    audit(req.user.id, 'auth.password.changed', req.user.username);
+    await audit(req.user.id, 'auth.password.changed', req.user.username);
     res.json({ ok: true });
   });
 
@@ -204,7 +204,7 @@ export function authRouter() {
   });
   route.post('/sessions/revoke-all', 'authenticated', async (req, res) => {
     await revokeUserSessions(req.user.id, req.session.id);
-    audit(req.user.id, 'auth.sessions.revoked_all', req.user.username);
+    await audit(req.user.id, 'auth.sessions.revoked_all', req.user.username);
     res.json({ ok: true });
   });
 

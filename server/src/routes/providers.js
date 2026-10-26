@@ -71,7 +71,7 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
       name: b.name, type: b.type, config: JSON.stringify(b.config), secret_enc: b.secret ? encrypt(b.secret) : null, enabled: +b.enabled, allowed_roles: JSON.stringify(b.allowedRoles),
       help_text: b.helpText ?? '', file_uploads: +(b.fileUploads ?? false), image_uploads: +(b.imageUploads ?? false), position: await nextPosition(t('providers')), // new connections go last
     }));
-    audit(req.user.id, 'provider.create', b.name, { type: b.type });
+    await audit(req.user.id, 'provider.create', b.name, { type: b.type });
     res.status(201).json(await dto(await get(id)));
   });
   // Reorder: the body lists every id in the new order. Registered before '/:id' so "order" is never read as an id.
@@ -84,13 +84,13 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
   route.put('/admin/providers/order', 'provider.write', async (req, res) => {
     const { ids } = validate(orderBody, req.body);
     await reorder('providers', {}, ids);
-    audit(req.user.id, 'provider.reorder', null, { ids });
+    await audit(req.user.id, 'provider.reorder', null, { ids });
     res.json({ ok: true });
   });
   route.put('/admin/providers/:id/models/order', 'provider.write', async (req, res) => {
     const p = await get(req.params.id), { ids } = validate(orderBody, req.body);
     await reorder('models', { provider_id: p.id }, ids);
-    audit(req.user.id, 'provider.models.reorder', p.name, { ids });
+    await audit(req.user.id, 'provider.models.reorder', p.name, { ids });
     res.json({ ok: true });
   });
   route.put('/admin/providers/:id', { perm: 'provider.write', stepup: true }, async (req, res) => {
@@ -102,13 +102,13 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
       ...(b.secret && { secret_enc: encrypt(b.secret) }), ...(b.helpText != null && { help_text: b.helpText }),
       ...(b.fileUploads !== undefined && { file_uploads: +b.fileUploads }), ...(b.imageUploads !== undefined && { image_uploads: +b.imageUploads }),
     });
-    audit(req.user.id, 'provider.update', b.name, { secretChanged: !!b.secret, helpTextChanged: b.helpText !== undefined && b.helpText !== (p.help_text || '') });
+    await audit(req.user.id, 'provider.update', b.name, { secretChanged: !!b.secret, helpTextChanged: b.helpText !== undefined && b.helpText !== (p.help_text || '') });
     res.json(await dto(await get(p.id)));
   });
   route.delete('/admin/providers/:id', { perm: 'provider.write', stepup: true }, async (req, res) => {
     const p = await get(req.params.id);
     await getKnex()('providers').where({ id: p.id }).del();
-    audit(req.user.id, 'provider.delete', p.name);
+    await audit(req.user.id, 'provider.delete', p.name);
     res.json({ ok: true });
   });
   // Query a connection for its available models BEFORE it is saved (or while editing). Nothing is persisted.
@@ -126,7 +126,7 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
     try {
       const adapter = adapterFactory({ type: b.type, config: JSON.stringify(b.config), secret_enc: secretEnc });
       const models = await Promise.race([adapter.listModels(), new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out after 20 seconds')), 20_000))]);
-      audit(req.user.id, 'provider.discover', b.type, { count: models.length });
+      await audit(req.user.id, 'provider.discover', b.type, { count: models.length });
       res.json({ ok: true, models });
     } catch (e) {
       let msg = String(e.message || 'Request failed').slice(0, 300);
@@ -177,24 +177,24 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
         });
       }
     });
-    audit(req.user.id, 'provider.model.upsert', p.name, { model: b.modelId, enabled: b.enabled, ...(b.inputPrice !== undefined || b.outputPrice !== undefined ? { inputPrice: b.inputPrice, outputPrice: b.outputPrice } : {}) });
+    await audit(req.user.id, 'provider.model.upsert', p.name, { model: b.modelId, enabled: b.enabled, ...(b.inputPrice !== undefined || b.outputPrice !== undefined ? { inputPrice: b.inputPrice, outputPrice: b.outputPrice } : {}) });
     res.json(await dto(await get(p.id)));
   });
   route.delete('/admin/models/:id', 'provider.write', async (req, res) => {
     await getKnex()('models').where({ id: intId(req.params.id) }).del();
-    audit(req.user.id, 'provider.model.delete', req.params.id);
+    await audit(req.user.id, 'provider.model.delete', req.params.id);
     res.json({ ok: true });
   });
-  route.put('/admin/default-models', 'provider.write', (req, res) => {
+  route.put('/admin/default-models', 'provider.write', async (req, res) => {
     const dm = validate(z.object({ plan: z.number().int().nullable(), act: z.number().int().nullable(), chat: z.number().int().nullable() }), req.body);
-    saveSettings('general', { ...getSettings('general'), defaultModels: dm });
-    audit(req.user.id, 'settings.default_models', null, dm);
+    await saveSettings('general', { ...getSettings('general'), defaultModels: dm });
+    await audit(req.user.id, 'settings.default_models', null, dm);
     res.json(dm);
   });
 
   // Models the current user may use (enabled provider + enabled model + role allow-list).
   route.get('/models', 'provider.use', async (req, res) => {
-    const roles = userRoleNames(req.user.id);
+    const roles = await userRoleNames(req.user.id);
     const rows = (await getKnex()('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.enabled': 1, 'p.enabled': 1 })
       .orderBy([{ column: 'p.position' }, { column: 'p.id' }, { column: 'm.position' }, { column: 'm.id' }])
       .select('m.id', 'm.model_id as modelId', getKnex().raw('COALESCE(m.label, m.model_id) as label'), 'p.name as provider', 'p.allowed_roles as ar', 'm.thinking_mode as tm',
@@ -203,7 +203,7 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
         'm.help_text as modelHelp', 'p.id as pid', 'p.type as ptype', 'p.config as pconfig', 'p.secret_enc as psecret'))
       .filter((m) => { const ar = JSON.parse(m.ar); return !ar.length || ar.some((x) => roles.includes(x)); });
     // thinkingCapable: what the provider reports (null = unknown). Only models that could think (admin-enabled) are probed.
-    const capable = await Promise.all(rows.map((m) => m.tm === 'off' ? null : probeThinking(adapterFactory, { id: m.pid, type: m.ptype, config: m.pconfig, secret_enc: m.psecret }, m.modelId)));
+    const capable = await Promise.all(rows.map(async (m) => m.tm === 'off' ? null : await probeThinking(adapterFactory, { id: m.pid, type: m.ptype, config: m.pconfig, secret_enc: m.psecret }, m.modelId)));
     const showPricing = getSettings('general').showModelPricing; // prices are admin-entered; users only see them when this is on
     res.json({
       models: await Promise.all(rows.map(async ({ ar, tm, mf, mi, pf, pi, pid, ptype, pconfig, psecret, inputPrice, outputPrice, ...m }, i) => ({ ...m, autoContext: !!m.autoContext, contextSize: m.autoContext ? null : m.contextSize, ...(showPricing ? { inputPrice, outputPrice } : {}), supportsThinking: tm !== 'off' && capable[i] !== false, thinkingCapable: capable[i], supportsFiles: !!(mf ?? pf), supportsImages: !!(mi ?? pi), badges: await badgesFor(m.id) }))),
@@ -217,7 +217,7 @@ export function providersRouter({ adapterFactory = createAdapter, lookup } = {})
 export const uploadCaps = ({ model, provider }) => ({ files: !!(model.file_uploads ?? provider.file_uploads), images: !!(model.image_uploads ?? provider.image_uploads) });
 
 export async function resolveModel(user, modelRowId) {
-  const roles = userRoleNames(user.id);
+  const roles = await userRoleNames(user.id);
   const k = getKnex();
   const row = await k('models as m').join('providers as p', 'p.id', 'm.provider_id').where({ 'm.id': modelRowId, 'm.enabled': 1, 'p.enabled': 1 }).first('m.*', 'p.id as pid');
   if (!row) return null;

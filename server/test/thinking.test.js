@@ -1,3 +1,6 @@
+import Database from 'better-sqlite3';
+import { legacySchema } from '../src/db/legacy-migrate.js';
+import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ThinkSplitter, defaultThinking, replayable } from '../src/llm/thinking.js';
 import { anthropicAdapter, buildRequest as antReq } from '../src/llm/anthropic.js';
@@ -5,7 +8,7 @@ import { bedrockAdapter, buildRequest as bedReq } from '../src/llm/bedrock.js';
 import { openaiAdapter, buildRequest as buildOpenai } from '../src/llm/openai.js';
 import { runAgentTurn } from '../src/agent/loop.js';
 import { freshDb, createApp, login, addProvider, fakeAdapterFactory, tmpDir } from './helpers.js';
-import { getDb, openDb } from '../src/db/index.js';
+import { openDb } from '../src/db/index.js';
 
 async function collect(it) { const out = []; for await (const e of it) out.push(e); return out; }
 async function* gen(items) { for (const i of items) yield i; }
@@ -124,12 +127,12 @@ describe('agent loop + persistence', () => {
   });
 
   it('passes the model\'s thinking setting to the adapter and streams/persists thinking over HTTP (chat + agent)', async () => {
-    freshDb(); const modelId = addProvider();
-    getDb().prepare("UPDATE models SET thinking_mode='adaptive' WHERE id=?").run(modelId);
+    await freshDb(); const modelId = await addProvider();
+    (await sqlDb().prepare("UPDATE models SET thinking_mode='adaptive' WHERE id=?").run(modelId));
     const seen = [];
     const factory = () => ({ async *stream(args) { seen.push(args.thinking); yield { type: 'thinking', text: 'pondering' }; yield { type: 'text', text: 'hello' }; yield { type: 'done' }; } });
     const app = createApp({ deps: { adapterFactory: factory } });
-    const u = login(app, { username: 'thinker1' });
+    const u = await login(app, { username: 'thinker1' });
     const res = await u.post('/api/chat/turn').send({ message: 'hi', modelId }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
     const events = res.body.split('\n\n').filter(Boolean).map((l) => JSON.parse(l.slice(6)));
     expect(events.map((e) => e.type)).toEqual(['start', 'phase', 'phase', 'thinking', 'text', 'done']);
@@ -141,8 +144,8 @@ describe('agent loop + persistence', () => {
 
 describe('model thinking settings API and migration', () => {
   it('defaults by model name, accepts explicit settings, and the enable toggle never resets them', async () => {
-    freshDb(); const app = createApp();
-    const admin = login(app, { username: 'provadmin', roles: ['administrator'] });
+    await freshDb(); const app = createApp();
+    const admin = await login(app, { username: 'provadmin', roles: ['administrator'] });
     const p = (await admin.post('/api/admin/providers').send({ name: 'Anth', type: 'anthropic', config: {}, secret: 'k' })).body;
     const add = (body) => admin.post(`/api/admin/providers/${p.id}/models`).send(body);
     let m = (await add({ modelId: 'claude-opus-5-5' })).body.models.find((x) => x.modelId === 'claude-opus-5-5');
@@ -157,13 +160,15 @@ describe('model thinking settings API and migration', () => {
     const off = (await add({ modelId: 'claude-opus-5-5', thinkingMode: 'off' })).body.models.find((x) => x.modelId === 'claude-opus-5-5');
     expect(off).toMatchObject({ thinkingMode: 'off', thinkingBudget: null });
   });
-  it('adds the new columns to a database created before this feature existed', () => {
+  it('adds the new columns to a database created before this feature existed', async () => {
     const dir = tmpDir('migr-'); const file = `${dir}/old.db`;
-    const db = openDb(file);
-    db.exec('ALTER TABLE models DROP COLUMN thinking_mode; ALTER TABLE models DROP COLUMN thinking_budget;');
-    db.close();
-    const again = openDb(file);
-    expect(again.prepare('PRAGMA table_info(models)').all().map((c) => c.name)).toEqual(expect.arrayContaining(['thinking_mode', 'thinking_budget']));
+    const old = new Database(file);
+    old.exec(legacySchema);
+    old.exec('ALTER TABLE models DROP COLUMN thinking_mode; ALTER TABLE models DROP COLUMN thinking_budget;');
+    old.close();
+    const again = await openDb(file);
+    expect((await again.raw('PRAGMA table_info(models)')).map((c) => c.name)).toEqual(expect.arrayContaining(['thinking_mode', 'thinking_budget']));
+    await again.destroy();
   });
 });
 
