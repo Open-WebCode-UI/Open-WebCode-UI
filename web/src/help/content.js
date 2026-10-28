@@ -518,7 +518,7 @@ Select **Courses** in the top bar. Under **My courses** you see every course you
 > You see a course once your instructor publishes it and enrolls you, or enrolls a role or group you belong to. Missing a course? Ask your instructor.
 
 ## Move through a course
-The pages run down the left. Some courses group their pages into modules: the module's name appears as a heading with a count of finished pages, such as **Basics (1/3)**, and its pages sit beneath it. A ✓ marks each page you finish. Read a page, then select **Mark complete**, or select **Next page** to finish it and move on. Select **← All courses** to go back.
+The pages run down the left. Some courses group their pages into modules: the module's name appears as a heading with a count of finished pages, such as “Basics (1/3)”, and its pages sit beneath it. A ✓ marks each page you finish. Read a page, then select **Mark complete**, or select **Next page** to finish it and move on. Select **← All courses** to go back.
 
 ## Pages with a chat or a tutor
 Some pages put a panel beside the text.
