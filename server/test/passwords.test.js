@@ -7,7 +7,7 @@ import { createLocalUser, hashPassword, verifyPassword, PASSWORD_MAX } from '../
 
 let app;
 beforeEach(async () => { await freshDb(); app = createApp(); });
-const signIn = (password, username = 'breakglass') => request(app).post('/api/auth/local/login').send({ username, password });
+const signIn = (password, username = 'superadmin') => request(app).post('/api/auth/local/login').send({ username, password });
 const long = (n, seed = 'Tr0ub4dor&3-correct-horse-') => (seed.repeat(Math.ceil(n / seed.length))).slice(0, n);
 
 describe('long passwords', () => {
@@ -15,7 +15,7 @@ describe('long passwords', () => {
 
   it.each([100, 1_000, 10_000, 100_000])('accepts and verifies a %i-character password end to end', async (n) => {
     const pw = long(n);
-    await createLocalUser({ username: 'breakglass', password: pw, roles: ['administrator'], isBreakGlass: true });
+    await createLocalUser({ username: 'superadmin', password: pw, roles: ['administrator'], isBreakGlass: true });
     const ok = await signIn(pw);
     expect(ok.status).toBe(200); expect(ok.body.stage).toBe('enroll');
     expect((await signIn('X' + pw.slice(1))).status).toBe(401); // same length, first character differs
@@ -40,7 +40,7 @@ describe('long passwords', () => {
   it('rejects only absurd lengths (> 100,000) with a clear message', async () => {
     try { await createLocalUser({ username: 'toolong1', password: long(PASSWORD_MAX + 1) }); throw new Error('should have thrown'); }
     catch (e) { expect(e.message).toBe('weak_password'); expect(e.extra.message).toMatch(/at most 100000/); }
-    await createLocalUser({ username: 'breakglass', password: long(1000), roles: ['administrator'], isBreakGlass: true });
+    await createLocalUser({ username: 'superadmin', password: long(1000), roles: ['administrator'], isBreakGlass: true });
     expect((await signIn(long(PASSWORD_MAX + 1))).status).toBe(400);
   });
 
@@ -57,7 +57,7 @@ describe('long passwords', () => {
   });
 
   it('legacy plain-bcrypt hashes still verify and are upgraded at next sign-in', async () => {
-    const id = await createLocalUser({ username: 'breakglass', password: long(30), roles: ['administrator'], isBreakGlass: true });
+    const id = await createLocalUser({ username: 'superadmin', password: long(30), roles: ['administrator'], isBreakGlass: true });
     (await sqlDb().prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(long(30), 4), id));
     expect((await signIn(long(30))).status).toBe(200);
     expect((await sqlDb().prepare('SELECT password_hash h FROM users WHERE id=?').get(id)).h).toMatch(/^bcrypt-sha256\$/);

@@ -27,7 +27,7 @@ function UserTable({ write, meId }) {
   return (
     <>
       {msg && <Alert severity={msg.s} sx={{ mb: 2 }} onClose={() => setMsg(null)}>{msg.t}</Alert>}
-      <Alert severity="info" sx={{ mb: 2 }}>Most people sign in through SSO and appear here automatically. Local accounts are intended for break-glass use and always require MFA.</Alert>
+      <Alert severity="info" sx={{ mb: 2 }}>Most people sign in through SSO and appear here automatically. Local accounts are intended for superadmin use and always require MFA.</Alert>
       {write && <Button variant="contained" sx={{ mb: 2 }} onClick={() => setEdit({ username: '', password: '', roles: [], isBreakGlass: true })}>Add local user</Button>}
       <Table size="small">
         <TableHead><TableRow><TableCell>Name</TableCell><TableCell>Email / username</TableCell><TableCell>Source</TableCell><TableCell>Roles</TableCell><TableCell>MFA</TableCell><TableCell>Last login</TableCell><TableCell /></TableRow></TableHead>
@@ -35,7 +35,7 @@ function UserTable({ write, meId }) {
           <TableRow key={u.id} sx={{ opacity: u.disabled ? 0.5 : 1 }}>
             <TableCell>{u.displayName}</TableCell>
             <TableCell>{u.email || u.username}</TableCell>
-            <TableCell><Chip size="small" label={u.source === 'saml' ? 'SSO' : u.isBreakGlass ? 'Break-glass' : 'Local'} /></TableCell>
+            <TableCell><Chip size="small" label={u.source === 'saml' ? 'SSO' : u.isBreakGlass ? 'Superadmin' : 'Local'} /></TableCell>
             <TableCell>{u.roles.map((r) => <Chip key={r} size="small" label={r} sx={{ mr: 0.5 }} />)}</TableCell>
             <TableCell>{u.source === 'local' ? (u.mfaEnrolled ? 'Enrolled' : 'Not enrolled') : 'IdP'}</TableCell>
             <TableCell>{u.lastLogin ? new Date(u.lastLogin * 1000).toLocaleString() : '—'}</TableCell>
@@ -67,7 +67,7 @@ function UserDialog({ init, roles, onClose, onSave }) {
         <TextField size="small" label="Email" value={f.email || ''} onChange={(e) => setF({ ...f, email: e.target.value })} />
         <Stack direction="row" spacing={1}><TextField size="small" fullWidth label="First name" value={f.firstName || ''} onChange={(e) => setF({ ...f, firstName: e.target.value })} /><TextField size="small" fullWidth label="Last name" value={f.lastName || ''} onChange={(e) => setF({ ...f, lastName: e.target.value })} /></Stack>
         <Autocomplete multiple options={roles} value={f.roles || []} onChange={(_, v) => setF({ ...f, roles: v })} renderInput={(p) => <TextField {...p} size="small" label="Roles" />} />
-        {!saml && <FormControlLabel control={<Switch checked={!!f.isBreakGlass} onChange={(e) => setF({ ...f, isBreakGlass: e.target.checked })} />} label="Break-glass account (allowed to use local sign-in)" />}
+        {!saml && <FormControlLabel control={<Switch checked={!!f.isBreakGlass} onChange={(e) => setF({ ...f, isBreakGlass: e.target.checked })} />} label="Superadmin account (allowed to use local sign-in)" />}
         {!isNew && <FormControlLabel control={<Switch checked={!!f.disabled} onChange={(e) => setF({ ...f, disabled: e.target.checked })} />} label="Disabled" />}
       </Stack></DialogContent>
       <DialogActions><Button onClick={onClose}>Cancel</Button><Button variant="contained" onClick={() => onSave(body, init.id)}>Save</Button></DialogActions>

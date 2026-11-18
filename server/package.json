@@ -6,7 +6,7 @@
     "dev": "node --env-file-if-exists=../.env --watch src/index.js",
     "start": "node --env-file-if-exists=../.env src/index.js",
     "test": "vitest run",
-    "reset-breakglass": "node --env-file-if-exists=../.env src/cli/reset-breakglass.js",
+    "reset-superadmin": "node --env-file-if-exists=../.env src/cli/reset-superadmin.js",
     "docs:lint": "redocly lint",
     "docs:build": "node scripts/build-docs.mjs",
     "build": "npm run docs:build",

@@ -78,10 +78,10 @@ describe('Local authentication (user CRUD)', () => {
     expect((await admin.put(`/api/admin/users/${admin.id}`).send({ roles: ['developer'] })).body.error).toBe('last_administrator');
     expect((await admin.put(`/api/admin/users/${admin.id}`).send({ disabled: true })).body.error).toBe('last_administrator');
   });
-  it('SAML users cannot get local passwords or break-glass flags', async () => {
+  it('SAML users cannot get local passwords or superadmin flags', async () => {
     const id = Number((await sqlDb().prepare("INSERT INTO users (source,email,idp_entity_id,name_id) VALUES ('saml','s@x.com','idp','n1')").run()).lastInsertRowid);
     expect((await admin.put(`/api/admin/users/${id}`).send({ password: PW })).body.error).toBe('saml_user_no_password');
-    expect((await admin.put(`/api/admin/users/${id}`).send({ isBreakGlass: true })).body.error).toBe('saml_user_no_breakglass');
+    expect((await admin.put(`/api/admin/users/${id}`).send({ isBreakGlass: true })).body.error).toBe('saml_user_no_superadmin');
     const list = (await admin.get('/api/admin/users')).body;
     expect(list.find((x) => x.id === id).source).toBe('saml');
   });

@@ -10,8 +10,8 @@ import { useRecoveryCode } from '../src/auth/mfa.js';
 let app;
 beforeEach(async () => { await freshDb(); app = createApp(); });
 const cookieOf = (res) => res.headers['set-cookie']?.[0]?.split(';')[0];
-const bg = async (extra = {}) => createLocalUser({ username: 'breakglass', password: PW, roles: ['administrator'], isBreakGlass: true, ...extra });
-const doLogin = (u = 'breakglass', p = PW) => request(app).post('/api/auth/local/login').send({ username: u, password: p });
+const bg = async (extra = {}) => createLocalUser({ username: 'superadmin', password: PW, roles: ['administrator'], isBreakGlass: true, ...extra });
+const doLogin = (u = 'superadmin', p = PW) => request(app).post('/api/auth/local/login').send({ username: u, password: p });
 const authed = (cookie, csrf) => ({ post: (u) => request(app).post(u).set('Cookie', cookie).set('x-csrf-token', csrf), get: (u) => request(app).get(u).set('Cookie', cookie) });
 
 async function enroll() {
@@ -26,7 +26,7 @@ async function enroll() {
   return { secret: setup.body.secret, recovery: conf.body.recoveryCodes, cookie: cookieOf(conf) ?? cookieOf(r), csrf: conf.body.csrf };
 }
 
-describe('local (break-glass) authentication', () => {
+describe('local (superadmin) authentication', () => {
   it('first login forces MFA enrollment: no privileges until completed', async () => {
     await bg();
     const r = await doLogin();
@@ -65,7 +65,7 @@ describe('local (break-glass) authentication', () => {
     const enc = (await sqlDb().prepare('SELECT totp_secret_enc FROM users').get()).totp_secret_enc;
     expect(enc).not.toContain(e.secret); expect(decrypt(enc)).toBe(e.secret);
   });
-  it('regular local users can sign in by default; can be restricted to break-glass accounts, or disabled entirely', async () => {
+  it('regular local users can sign in by default; can be restricted to superadmin accounts, or disabled entirely', async () => {
     await createLocalUser({ username: 'regular1', password: PW, roles: ['developer'] });
     await bg();
     expect((await doLogin('regular1')).status).toBe(200);
@@ -77,9 +77,9 @@ describe('local (break-glass) authentication', () => {
   });
   it('generic errors (no user enumeration), lockout after N failures, and audit entries', async () => {
     await bg();
-    const unknown = await doLogin('nobody', 'x'), wrong = await doLogin('breakglass', 'wrong-password-123');
+    const unknown = await doLogin('nobody', 'x'), wrong = await doLogin('superadmin', 'wrong-password-123');
     expect(unknown.status).toBe(401); expect(wrong.body).toEqual(unknown.body);
-    for (let i = 0; i < 6; i++) await doLogin('breakglass', 'wrong-password-123');
+    for (let i = 0; i < 6; i++) await doLogin('superadmin', 'wrong-password-123');
     expect((await doLogin()).status).toBe(401); // locked even with the right password
     const u = (await sqlDb().prepare('SELECT locked_until, lockouts FROM users').get());
     expect(u.locked_until).toBeGreaterThan(Date.now() / 1000); expect(u.lockouts).toBe(1);
@@ -93,7 +93,7 @@ describe('local (break-glass) authentication', () => {
   });
   it('rejects weak/guessable passwords and passwords containing the username', async () => {
     await expect(createLocalUser({ username: 'x1', password: 'short' })).rejects.toThrow();
-    await expect(createLocalUser({ username: 'breakglass', password: 'breakglass-123456' })).rejects.toThrow();
+    await expect(createLocalUser({ username: 'superadmin', password: 'superadmin-123456' })).rejects.toThrow();
     await expect(createLocalUser({ username: 'y1', password: 'aaaaaaaaaaaaaaaa' })).rejects.toThrow();
     expect((await sqlDb().prepare('SELECT password_hash FROM users').all())).toEqual([]);
   });

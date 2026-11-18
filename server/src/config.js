@@ -26,7 +26,7 @@ export const config = {
   encryptionKey: loadKey(),
   // Set ALLOW_INSECURE_DEV=1 to permit http cookies during local development.
   allowInsecureDev: process.env.ALLOW_INSECURE_DEV === '1',
-  breakGlassPassword: process.env.BREAKGLASS_PASSWORD || '',
+  superAdminPassword: process.env.SUPERADMIN_PASSWORD || '',
   // True when an administrator-managed server is serving plain HTTP (not chosen yet, or no HTTPS chosen).
   plainHttp: false,
   isProd: process.env.NODE_ENV === 'production',

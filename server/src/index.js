@@ -9,8 +9,8 @@ await initDb();
 startSettingsRefresh();
 const generated = await bootstrap();
 if (generated) {
-  console.log('\n================ BREAK-GLASS ACCOUNT ================');
-  console.log(`  username: breakglass\n  password: ${generated}\n  (shown once; you must change it and enroll MFA at first login)`);
+  console.log('\n================ SUPERADMIN ACCOUNT ================');
+  console.log(`  username: superadmin\n  password: ${generated}\n  (shown once; you must change it and enroll MFA at first login)`);
   console.log('=====================================================\n');
 }
 const managedBy = tlsManagement({ baseUrl: config.baseUrl });

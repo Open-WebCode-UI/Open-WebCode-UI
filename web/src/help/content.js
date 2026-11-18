@@ -984,7 +984,7 @@ Go to **Admin**, then **Users & roles**. The page has a **Users** tab and, if yo
 Go to **Admin**, then **Users & roles**, then the **Users** tab.
 - Select **Add local user** to create an account. Enter a **Username** and an **Initial password**. The person must change the password at first sign-in.
 - Select **Edit** on a row to change the name, email, or roles. Toggle **Disabled** to block an account without deleting it.
-- Toggle **Break-glass account (allowed to use local sign-in)** for emergency accounts.
+- Toggle **Superadmin account (allowed to use local sign-in)** for emergency accounts.
 - Select **Reset MFA** when someone loses their authenticator. You need the MFA reset permission.
 - Select **Delete** to remove a user.
 
@@ -1032,7 +1032,7 @@ Go to **Admin**, then **Security (MFA)**. Change the fields you need, then selec
 - **Absolute lifetime (seconds)** ends every session after that long, however active.
 
 ## Local authentication
-- Toggle **Allow local sign-in**, and toggle **Restrict local sign-in to break-glass accounts** to keep it for emergencies.
+- Toggle **Allow local sign-in**, and toggle **Restrict local sign-in to superadmin accounts** to keep it for emergencies.
 - **Minimum password length** sets the shortest password. Passwords can be as long as you like, up to 100,000 characters, and every character counts.
 - **Lock out after N failed attempts** and **Base lockout (minutes, doubles on repeats)** control lockouts. Lockouts double when they repeat.
 

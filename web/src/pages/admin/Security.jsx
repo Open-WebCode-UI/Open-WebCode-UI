@@ -8,7 +8,7 @@ export default function Security() {
     <SettingsPage title="Security" url="/api/admin/security" readOnly={!can('security.write')} intro="Multi-factor authentication enforcement, session lifetimes, and local-login policy. Saving requires re-verification.">
       {(f, set) => (<>
         <Typography variant="subtitle2">MFA enforcement</Typography>
-        <Alert severity="info">Local (break-glass) accounts always require MFA. For SSO users, MFA is performed by your IdP and verified here from the assertion.</Alert>
+        <Alert severity="info">Local (superadmin) accounts always require MFA. For SSO users, MFA is performed by your IdP and verified here from the assertion.</Alert>
         <Bool label="Require MFA for everyone" value={f.requireMfaEveryone} onChange={set('requireMfaEveryone')} />
         <Lines label="…or require MFA for these roles (one per line)" value={f.requireMfaRoles} onChange={set('requireMfaRoles')} />
         <Lines label="Accepted AuthnContextClassRef values (one per line)" value={f.samlRequiredAuthnContexts} onChange={set('samlRequiredAuthnContexts')} />
@@ -24,7 +24,7 @@ export default function Security() {
         <Num label="Absolute lifetime (seconds)" value={f.sessionAbsoluteSec} onChange={set('sessionAbsoluteSec')} />
         <Typography variant="subtitle2">Local authentication</Typography>
         <Bool label="Allow local sign-in" value={f.localLoginEnabled} onChange={set('localLoginEnabled')} />
-        <Bool label="Restrict local sign-in to break-glass accounts" value={f.breakGlassOnly} onChange={set('breakGlassOnly')} />
+        <Bool label="Restrict local sign-in to superadmin accounts" value={f.breakGlassOnly} onChange={set('breakGlassOnly')} />
         <Num label="Minimum password length" value={f.passwordMinLength} onChange={set('passwordMinLength')} />
         <Num label="Lock out after N failed attempts" value={f.lockoutThreshold} onChange={set('lockoutThreshold')} />
         <Num label="Base lockout (minutes, doubles on repeats)" value={f.lockoutMinutes} onChange={set('lockoutMinutes')} />

@@ -289,7 +289,7 @@ export function adminRouter({ webSearch = {} } = {}) {
       checkPassword(b.password, u.username);
       await k()('users').where({ id: u.id }).update({ password_hash: hashPassword(b.password), must_change_password: 1 });
     }
-    if (b.isBreakGlass !== undefined && u.source !== 'local') fail(400, 'saml_user_no_breakglass');
+    if (b.isBreakGlass !== undefined && u.source !== 'local') fail(400, 'saml_user_no_superadmin');
     // Only the fields the request names change; the rest keep their stored values.
     const patch = {};
     if (b.email != null) patch.email = b.email;

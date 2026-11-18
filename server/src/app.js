@@ -39,10 +39,10 @@ import { isLocalHost } from './tls.js';
 
 export async function bootstrap() {
   if ((await getKnex()('users').count({ c: '*' }).first()).c > 0) return null;
-  const password = config.breakGlassPassword || randomToken(15);
-  await createLocalUser({ username: 'breakglass', password, roles: ['administrator'], isBreakGlass: true, mustChange: !config.breakGlassPassword });
-  await audit(null, 'bootstrap.breakglass_created', 'breakglass');
-  return config.breakGlassPassword ? null : password;
+  const password = config.superAdminPassword || randomToken(15);
+  await createLocalUser({ username: 'superadmin', password, roles: ['administrator'], isBreakGlass: true, mustChange: !config.superAdminPassword });
+  await audit(null, 'bootstrap.superadmin_created', 'superadmin');
+  return config.superAdminPassword ? null : password;
 }
 
 export function createApp({ deps = {} } = {}) {
