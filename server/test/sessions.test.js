@@ -135,6 +135,38 @@ describe('context warnings and compaction', () => {
     ev = await turn({ message: chars(0.3), conversationId: id }); expect(ev.find((e) => e.type === 'context').level).toBe('high');
     expect((await u.get(`/api/sessions/${id}`)).body.context).toMatchObject({ level: 'high', limit }); expect((await u.get(`/api/sessions?projectId=${project.id}`)).body[0].context.level).toBe('high'); // same number everywhere
   });
+  it('/auto-compact turns the profile setting on and off, and says which it is', async () => {
+    await setup([text('hi')]);
+    const id = (await turn({ message: 'hi' }))[0].conversationId;
+    const say = async (message) => (await turn({ message, conversationId: id })).find((e) => e.type === 'notice').text;
+    expect(await say('/auto-compact on')).toMatch(/^Auto-compact is on/); expect((await u.get('/api/profile/preferences')).body.autoCompact).toBe(true);
+    expect(await say('/auto-compact')).toMatch(/^Auto-compact is on/);
+    expect(await say('/auto-compact off')).toMatch(/^Auto-compact is off/); expect((await u.get('/api/profile/preferences')).body.autoCompact).toBe(false);
+  });
+  it('with auto-compact on, a message sent over 80% full is summarized first, and the model gets the summary and the new message only', async () => {
+    await setup([text('first answer'), text(summary), text('after compaction')]);
+    const id = (await turn({ message: 'build the thing' }))[0].conversationId;
+    const limit = Math.round((await u.get(`/api/sessions/${id}`)).body.context.tokens / 0.5); // the session is now half full
+    (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId)); await loadSettings();
+    await u.put('/api/profile/preferences').send({ autoCompact: true });
+    const big = 'x'.repeat(Math.round(limit * 0.4 * 4)); // the new message alone takes the window past 80%
+    const ev = await turn({ message: big, conversationId: id });
+    const types = ev.map((e) => e.type);
+    expect(types.indexOf('compacting')).toBeGreaterThan(types.indexOf('start')); expect(types.indexOf('compacted')).toBeGreaterThan(types.indexOf('compacting'));
+    expect(ev.find((e) => e.type === 'notice').text).toMatch(/over 80% full/);
+    const sent = JSON.stringify(seen[2].messages); // seen[1] is the summarizing call
+    expect(sent).toContain('## Goal'); expect(sent).toContain(big.slice(0, 50)); expect(sent).not.toContain('build the thing');
+    const kinds = (await u.get(`/api/sessions/${id}`)).body.items.map((i) => i.kind);
+    expect(kinds.indexOf('compacted')).toBeLessThan(kinds.lastIndexOf('user')); // the message comes after the summary
+  });
+  it('with auto-compact off (the default), the same message is sent in full with no compaction', async () => {
+    await setup([text('first answer'), text('after')]);
+    const id = (await turn({ message: 'build the thing' }))[0].conversationId;
+    const limit = Math.round((await u.get(`/api/sessions/${id}`)).body.context.tokens / 0.5);
+    (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(limit, modelId)); await loadSettings();
+    const ev = await turn({ message: 'x'.repeat(Math.round(limit * 0.4 * 4)), conversationId: id });
+    expect(ev.some((e) => e.type === 'compacting')).toBe(false); expect(seen).toHaveLength(2);
+  });
   it('sizes and warnings use the model the session actually used, so every number agrees', async () => {
     await setup([text('ok')]); (await sqlDb().prepare('UPDATE models SET context_size=? WHERE id=?').run(5000, modelId)); // no default models configured await loadSettings();
     const ev = await turn({ message: 'hi' }); const id = ev[0].conversationId, live = ev.find((e) => e.type === 'context');

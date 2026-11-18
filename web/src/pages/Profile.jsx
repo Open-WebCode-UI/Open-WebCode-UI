@@ -116,6 +116,7 @@ function AppearanceForm() {
           {toggle('highContrast', 'High contrast', 'Stronger text and border contrast.')}
           {toggle('reduceMotion', 'Reduce motion', 'Turns off animations and transitions.')}
           {toggle('underlineLinks', 'Always underline links', 'Makes links easier to spot without relying on color.')}
+          {toggle('autoCompact', 'Compact long sessions automatically', 'When an agent session is over 80% full, summarize it before your next message. Same as /auto-compact.')}
         </FormGroup>
       </Stack>
     </Paper>

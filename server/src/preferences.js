@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const DEFAULT_PREFERENCES = { colorMode: null, fontScale: 100, reduceMotion: false, highContrast: false, underlineLinks: false };
+// autoCompact: summarize a chat session on its own when its context is over 80% full (the same setting as /auto-compact).
+export const DEFAULT_PREFERENCES = { colorMode: null, fontScale: 100, reduceMotion: false, highContrast: false, underlineLinks: false, autoCompact: false };
 
 export const prefSchema = z.object({
   colorMode: z.enum(['system', 'light', 'dark']).nullable(),
@@ -8,6 +9,7 @@ export const prefSchema = z.object({
   reduceMotion: z.boolean(),
   highContrast: z.boolean(),
   underlineLinks: z.boolean(),
+  autoCompact: z.boolean(),
 }).strict();
 
 // Stored preferences are re-validated on read so a hand-edited or older row can never break the UI.

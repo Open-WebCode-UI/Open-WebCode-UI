@@ -179,7 +179,7 @@ export async function searchArchive(convId, query, { limit = 8, radius = 160 } =
   if (!total) return `No match for "${String(query).trim()}" in the earlier conversation.`;
   return `${total} match${total === 1 ? '' : 'es'} in the earlier conversation${total > hits.length ? `, showing the first ${hits.length}` : ''}:\n${hits.join('\n')}`;
 }
-export const COMMAND_RE = /^\/(compact|clear)(?:\s+([\s\S]*))?$/i;
+export const COMMAND_RE = /^\/(compact|clear|auto-compact)(?:\s+([\s\S]*))?$/i;
 
 // Conversations with a turn in progress (so a session cannot run two turns at once, and is shown as busy).
 export const activeConversations = new Set();

@@ -130,6 +130,7 @@ A full context makes the agent slower and more expensive. Near the limit, it for
 - The summary replaces the old messages in the agent's context, and the session carries on from it.
 - Add a focus to protect what matters: \`/compact keep the database decisions\`.
 - Use it in the middle of a task, when the agent still needs the background.
+- Let the agent compact by itself: turn on **Compact long sessions automatically** under your profile, or type \`/auto-compact on\`. The agent then summarizes a session that is over 80% full before your next message. Type \`/auto-compact off\` to stop.
 
 ## Clear: start over
 - Type \`/clear\`. The agent forgets the whole session, with no summary. The old messages stay on screen so you can still read them.

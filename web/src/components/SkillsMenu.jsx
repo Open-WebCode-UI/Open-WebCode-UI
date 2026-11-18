@@ -14,6 +14,7 @@ export default function SkillsMenu({ onPick, disabled, scope = 'agent' }) {
         {skills.map((s) => <MenuItem key={s.name} onClick={() => { setAnchor(null); onPick(`/${s.name} `); }}><ListItemText primary={`/${s.name}`} secondary={s.description} secondaryTypographyProps={{ sx: { maxWidth: 320, whiteSpace: 'normal' } }} /></MenuItem>)}
         <MenuItem key="status" onClick={() => { setAnchor(null); onPick('/status'); }}><ListItemText primary="/status" secondary="Connection, server, user, and project information" secondaryTypographyProps={{ sx: { maxWidth: 320, whiteSpace: 'normal' } }} /></MenuItem>
         {scope === 'agent' && <MenuItem key="clear" onClick={() => { setAnchor(null); onPick('/clear'); }}><ListItemText primary="/clear" secondary="Wipe the agent's memory of this session and start fresh" secondaryTypographyProps={{ sx: { maxWidth: 320, whiteSpace: 'normal' } }} /></MenuItem>}
+        {scope === 'agent' && <MenuItem key="auto-compact" onClick={() => { setAnchor(null); onPick('/auto-compact '); }}><ListItemText primary="/auto-compact" secondary="Compact the session by itself when it is over 80% full: /auto-compact on or off" secondaryTypographyProps={{ sx: { maxWidth: 320, whiteSpace: 'normal' } }} /></MenuItem>}
       </Menu>
     </>
   );
