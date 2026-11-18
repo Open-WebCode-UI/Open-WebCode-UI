@@ -1,6 +1,6 @@
 {
-  "name": "agentic-coding-platform",
-  "version": "1.0.0",
+  "name": "Open-WebCode-UI",
+  "version": "1.0.1",
   "private": true,
   "workspaces": [
     "server",

@@ -157,7 +157,8 @@ describe('update routes', () => {
     expect((await dev.get('/api/admin/update')).status).toBe(403);
     const r = await admin.get('/api/admin/update');
     expect(r.status).toBe(200);
-    expect(r.body.currentVersion).toBe('1.0.0');
+    const shipped = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '../../package.json'), 'utf8')).version;
+    expect(r.body.currentVersion).toBe(shipped);
     expect(r.body.restartRequired).toBe(false);
   });
 
