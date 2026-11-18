@@ -56,6 +56,23 @@ Drag a divider, or focus it and press the <kbd>←</kbd> or <kbd>→</kbd> arrow
 
 Your layout stays in this browser. Moving a panel never interrupts the agent.` },
 
+  { id: 'admin-start', group: 'Get started', title: 'Server setup checklist', requires: ANY_ADMIN, body: `
+Complete these steps in order. Each one names the page to open.
+
+1. **Connect a model.** Go to **Admin**, then **Server (AI services)**. Without a model, nobody can use the agent. See [Connect AI models](#admin-ai), then follow the [guide for your provider](#ai-providers).
+2. **Set up sign-in.** Go to **Admin**, then **SAML**, and configure [SSO](#admin-saml). Keep one local administrator for emergencies.
+3. **Map groups to roles.** Go to **Admin**, then **SAML**, then the **Group mapping** tab. Users without a mapped group can't sign in unless you set a **Default role** there. See [Users, roles, and groups](#admin-users).
+4. **Enforce MFA** and set the idle timeout. Go to **Admin**, then **Security (MFA)**. See [Security settings](#admin-security).
+5. **Review the general settings.** Go to **Admin**, then **General**. Keep **Agent execution mode** on **File tools only** until you need a shell. List protected files, such as \`.env\`, in **Files the agent may never read or write**. See [General settings](#admin-general).
+6. **Enter model prices** so [reports](#admin-reports) show real costs. Open **Admin**, then **Server (AI services)**, and choose **Edit** on each model.
+7. **Add web search services**, if you want them. Go to **Admin**, then **Web search**.
+8. **Add MCP servers**, if you want them. Go to **Admin**, then **MCP servers**.
+9. **Brand the app**, if you want to. Go to **Admin**, then **Branding**.
+10. **Test as a normal user.** Sign in without administrator rights, open a project, and ask the agent a question.
+
+> [!INFO]
+> Share [Use AI safely](#ai-safety) with your users before launch.` },
+
   // ───────────────────────────── Key concepts
   { id: 'ai-basics', group: 'Key concepts', title: 'AI models, tokens, and context', requires: null, body: `
 An AI **model**, also called a large language model (LLM), learns from large amounts of text and code. It writes one small piece at a time and picks what fits best. That lets it answer questions, draft code, and explain errors.
@@ -744,7 +761,7 @@ Standing instructions for Plan mode, Act mode, the Coding chat, and the General 
   { id: 'appearance', group: 'Your account', title: 'Appearance and accessibility', requires: null, body: `
 Open **Profile → Account → Appearance and accessibility**. These settings belong to your account, so they follow you to other browsers and devices.
 
-- **Color mode.** Choose **Device default**, **Light**, or **Dark**. The sun and moon button in the top bar changes it too.
+- **Color mode.** Choose **Device default**, **Light**, or **Dark**. The color mode button in the bottom-left corner changes it too.
 - **Text size.** Make all text larger: **Default**, **Large**, **Larger**, or **Largest**.
 - **High contrast.** Stronger text and border contrast.
 - **Reduce motion.** Turns off animations and transitions.
@@ -813,22 +830,6 @@ Select **Admin** in the top bar. A list of pages appears on the left. You see on
 > [!WARNING]
 > Run the server behind HTTPS on a patched host, and back up its data folder. The data folder holds the database and the encryption key. Without the key, stored API keys and secrets can't be read again.` },
 
-  { id: 'admin-start', group: 'Administer', title: 'Setup checklist', requires: ANY_ADMIN, body: `
-Complete these steps in order. Each one names the page to open.
-
-1. **Connect a model.** Go to **Admin**, then **Server (AI services)**. Without a model, nobody can use the agent. See [Connect AI models](#admin-ai), then follow the [guide for your provider](#ai-providers).
-2. **Set up sign-in.** Go to **Admin**, then **SAML**, and configure [SSO](#admin-saml). Keep one local administrator for emergencies.
-3. **Map groups to roles.** Go to **Admin**, then **SAML**, then the **Group mapping** tab. Users without a mapped group can't sign in unless you set a **Default role** there. See [Users, roles, and groups](#admin-users).
-4. **Enforce MFA** and set the idle timeout. Go to **Admin**, then **Security (MFA)**. See [Security settings](#admin-security).
-5. **Review the general settings.** Go to **Admin**, then **General**. Keep **Agent execution mode** on **File tools only** until you need a shell. List protected files, such as \`.env\`, in **Files the agent may never read or write**. See [General settings](#admin-general).
-6. **Enter model prices** so [reports](#admin-reports) show real costs. Open **Admin**, then **Server (AI services)**, and choose **Edit** on each model.
-7. **Add MCP servers**, if you want them. Go to **Admin**, then **MCP servers**.
-8. **Brand the app**, if you want to. Go to **Admin**, then **Branding**.
-9. **Test as a normal user.** Sign in without administrator rights, open a project, and ask the agent a question.
-
-> [!INFO]
-> Share [Use AI safely](#ai-safety) with your users before launch.` },
-
   { id: 'admin-general', group: 'Administer', title: 'General settings', requires: 'settings.read', body: `
 Go to **Admin**, then **General**. Change the fields you need, then select **Save**. Saving asks you to confirm it's you.
 
@@ -896,7 +897,7 @@ Find the model under its connection and select **Edit**. The window has these se
 - **Context window (tokens)** sets the model's limit, so the "session is getting long" hint appears at the right time.
 - Turn on **Automatic context sizing** when the provider picks the window itself. The app grays out the context window field and ignores it, and users see "Automatic context size" on the model's card. The "session is getting long" hint then measures against a default of 128,000 tokens.
 - **Max reply (tokens)** caps the length of each answer.
-- **Input price ($ per 1M tokens)** and **Output price ($ per 1M tokens)** feed the [reports](#admin-reports).
+- **Input price (\\$ per 1M tokens)** and **Output price (\\$ per 1M tokens)** feed the [reports](#admin-reports).
 
 ### Thinking
 Pick **Adaptive** for current Claude models, **Budget** for older ones (then set **Thinking budget (tokens)**), or **Off**. Models that stream their reasoning on their own need no setting.
@@ -1156,7 +1157,7 @@ The page shows:
 Choose **Download CSV** to get one row per model request, for use in a spreadsheet.
 
 ## How cost works
-Cost is tokens × the model's price. Enter each model's input and output price (US dollars per million tokens) under **Admin**, then **Server (AI services)**, in the model's **Edit** window. The report counts models without a price but charges them $0, and warns you.
+Cost is tokens × the model's price. Enter each model's input and output price (US dollars per million tokens) under **Admin**, then **Server (AI services)**, in the model's **Edit** window. The report counts models without a price but charges them \\$0, and warns you.
 
 > [!INFO]
 > When a provider doesn't report token counts, the app estimates them and marks the row "est.".
@@ -1172,6 +1173,25 @@ Each entry links to the one before it, so the app can tell when someone tampers 
 
 > [!DANGER]
 > A red banner that says the integrity check failed means someone changed or removed an entry. Treat it as a security incident. Note the entry number it names, and investigate before you change anything else.` },
+
+  { id: 'admin-updates', group: 'Administer', title: 'Update the server', requires: 'settings.read', body: `
+Each release has a semantic version number, such as 1.2.0. The **Updates** page shows the version you run and the newest release.
+
+## Check for a new release
+1. Go to **Admin**, then **Updates**.
+2. Select **Check for updates**. The page shows the newest release and when it was last checked.
+
+## Install it
+1. Select **Install update**. Confirm with your multi-factor code when asked.
+2. Watch the progress log. The server fetches the release, installs its dependencies, and builds it.
+3. When it finishes, restart the server. The page shows the new version and keeps reminding you until you restart, because the running server keeps its old code until then.
+
+If an update fails, the server puts the previous version back and the page says so. Read the log to see why.
+
+> [!INFO]
+> Installing works only when the server runs from a git checkout with no local changes to tracked files. Otherwise the page explains what to fix. Only people with the **Modify general settings** permission can install updates. Everyone with **View general settings** can check.
+
+From a terminal, the same updates are available with \`npm run update -w server\` (install the newest release), \`npm run update -w server -- check\`, or \`npm run update -w server -- apply 1.2.0\`. The repository's README has the details.` },
 
   // ───────────────────────────── Integration guides (one per AI provider)
   ...INTEGRATION_TOPICS,
@@ -1238,7 +1258,7 @@ Check with your administrator that a group maps to a role for you. Administrator
 
 Ask an administrator to connect an AI model and allow your role to use it.
 
-## I can't switch to Act
+## I can't switch to Act in the agentic coding module
 
 Your role can plan but not change files. Ask an administrator for Act access.
 
@@ -1256,7 +1276,7 @@ An administrator has to turn it on and give your role the permission.
 
 ## The agent feels slow or forgetful
 
-Your session may be full. Type \`/compact\`, or start a new session.
+Your session may be full. Type \`/compact\`, or start a new session. You may also be using a slower model. Try switching to a faster model.
 
 ## The agent made a mistake
 

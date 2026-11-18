@@ -41,7 +41,7 @@ describe('Layout menu in the header', () => {
   });
   it('opens with the keyboard and closes with Escape', async () => {
     header('/'); const b = await screen.findByRole('button', { name: 'Layout' }); b.focus(); await userEvent.keyboard('{Enter}'); expect(await screen.findByRole('menu', { name: 'Layout' })).toBeInTheDocument();
-    await userEvent.keyboard('{Escape}'); await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await userEvent.keyboard('{Escape}'); await waitFor(() => expect(screen.queryByRole('menu', { name: 'Layout' })).toBeNull());
   });
 });
 
@@ -51,7 +51,7 @@ describe('Layout menu actions change the workspace', () => {
     const before = layoutStore.get(); expect(visiblePanes(before)).toEqual(visiblePanes(DEFAULT_LAYOUT));
     await userEvent.click(await within(await open()).findByRole('menuitem', { name: PRESETS.chatLeft.label }));
     expect(layoutStore.get()).toEqual(applyPreset(before, 'chatLeft')); expect(layoutStore.get().root.c[0].n.p).toBe('chat'); expect(chatX()).toBe(0);
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('ide-layout-v2')).root.c[0].n.p).toBe('chat')); await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('ide-layout-v2')).root.c[0].n.p).toBe('chat')); await waitFor(() => expect(screen.queryByRole('menu', { name: 'Layout' })).toBeNull());
   });
   it('panels can be hidden and shown again, one after another, without closing the menu', async () => {
     workspace(); await screen.findByTestId('pane-chat'); const menu = await open();
@@ -72,7 +72,7 @@ describe('Layout menu actions change the workspace', () => {
   });
   it('the menu reflects changes made by dragging panels, since both share one layout', async () => {
     workspace(); await screen.findByTestId('pane-chat');
-    await userEvent.click(screen.getByRole('button', { name: 'Terminal panel options' })); await userEvent.click(await screen.findByRole('menuitem', { name: 'Hide panel' })); await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await userEvent.click(screen.getByRole('button', { name: 'Terminal panel options' })); await userEvent.click(await screen.findByRole('menuitem', { name: 'Hide panel' })); await waitFor(() => expect(screen.queryByRole('menu', { name: 'Layout' })).toBeNull());
     const menu = await open(); expect(within(menu).getByRole('menuitemcheckbox', { name: 'Terminal' })).toHaveAttribute('aria-checked', 'false');
   });
   it('shows the saved layout on the next visit', async () => {

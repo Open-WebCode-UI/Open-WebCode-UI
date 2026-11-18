@@ -13,6 +13,7 @@ import McpServers from './McpServers.jsx';
 import WebSearch from './WebSearch.jsx';
 import Tls from './Tls.jsx';
 import Courses from './Courses.jsx';
+import Updates from './Updates.jsx';
 
 export const ADMIN_PAGES = [
   { path: 'general', label: 'General', perm: 'settings.read', el: <General /> },
@@ -25,6 +26,7 @@ export const ADMIN_PAGES = [
   { path: 'courses', label: 'Courses', perm: 'course.admin', el: <Courses /> },
   { path: 'saml', label: 'SAML', perm: 'idp.read', el: <Saml /> },
   { path: 'security', label: 'Security (MFA)', perm: 'security.read', el: <Security /> },
+  { path: 'updates', label: 'Updates', perm: 'settings.read', el: <Updates /> },
   { path: 'audit', label: 'Audit log', perm: 'audit.read', el: <Audit /> },
 ];
 

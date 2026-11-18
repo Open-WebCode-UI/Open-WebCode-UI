@@ -30,7 +30,7 @@ describe('IDE', () => {
     expect(screen.getByLabelText('Message')).toHaveValue('half written idea');
     await waitFor(() => expect(JSON.parse(localStorage.getItem('ide-layout-v2')).root.c[0].n.p).toBe('chat'));
     await userEvent.click(screen.getByRole('button', { name: 'Layout' })); await userEvent.click(await screen.findByRole('menuitem', { name: /Chat and terminal at the bottom/ })); expect(screen.getByLabelText('Message')).toHaveValue('half written idea');
-    await userEvent.click(screen.getByRole('button', { name: 'Layout' })); await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Terminal' })); expect(screen.getByTestId('pane-terminal')).toHaveAttribute('data-hidden', 'true'); await userEvent.keyboard('{Escape}'); await waitFor(() => expect(screen.queryByRole('menu')).toBeNull()); // the menu stays open while toggling
+    await userEvent.click(screen.getByRole('button', { name: 'Layout' })); await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Terminal' })); expect(screen.getByTestId('pane-terminal')).toHaveAttribute('data-hidden', 'true'); await userEvent.keyboard('{Escape}'); await waitFor(() => expect(screen.queryByRole('menu', { name: 'Layout' })).toBeNull()); // the menu stays open while toggling
     await userEvent.click(screen.getByRole('button', { name: 'Layout' })); await userEvent.click(await screen.findByRole('menuitem', { name: /Reset layout/ }));
     expect(screen.getByTestId('pane-terminal')).not.toHaveAttribute('data-hidden'); expect(chatX()).toBeGreaterThanOrEqual(0);
   });

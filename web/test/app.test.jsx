@@ -12,11 +12,29 @@ import { buildTheme, DEFAULT_BRANDING } from '../src/theme.js';
 import { renderApp, userWith, ALL, ADMIN, PUBLIC } from './helpers.jsx';
 
 describe('navigation is permission-gated', () => {
+  it('color mode is a speed dial in the bottom-left corner, not in the top bar', async () => {
+    renderApp(<Layout><div /></Layout>, { user: userWith(ALL) });
+    expect(await screen.findByRole('button', { name: 'Color mode: Device default' })).toBeInTheDocument();
+    expect(within(screen.getByRole('banner')).queryByRole('button', { name: /Color mode/ })).toBeNull();
+  });
+  it('the name menu lists each profile page the user can open', async () => {
+    renderApp(<Layout><div /></Layout>, { user: userWith(['agent.plan', 'chat.use', 'provider.use']) });
+    await userEvent.click(await screen.findByRole('button', { name: 'Dee Veloper' }));
+    const items = screen.getAllByRole('menuitem').map((m) => m.textContent);
+    expect(items).toEqual(['Account', 'System prompts', 'Agent skills', 'Chat skills', 'Security']);
+    expect(screen.getByRole('menuitem', { name: 'Chat skills' })).toHaveAttribute('href', '/profile/chat-skills');
+  });
+  it('a role that cannot chat does not see Chat skills in the menu', async () => {
+    renderApp(<Layout><div /></Layout>, { user: userWith(['agent.plan', 'provider.use']) });
+    await userEvent.click(await screen.findByRole('button', { name: 'Dee Veloper' }));
+    expect(screen.queryByRole('menuitem', { name: 'Chat skills' })).toBeNull(); expect(screen.getByRole('menuitem', { name: 'Agent skills' })).toBeInTheDocument();
+  });
   it('developers do not see Admin; administrators do', async () => {
     const { unmount } = renderApp(<Layout><div /></Layout>, { user: userWith(ALL) });
     await screen.findByRole('link', { name: 'Agent' });
     expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Profile' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Profile' })).toBeNull(); // the profile pages live in the menu under the name
+    await userEvent.click(screen.getByRole('button', { name: 'Dee Veloper' })); expect(screen.getByRole('menuitem', { name: 'Account' })).toHaveAttribute('href', '/profile/account');
     expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument();
     unmount();
     renderApp(<Layout><div /></Layout>, { user: userWith(ADMIN) });

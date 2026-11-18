@@ -108,7 +108,7 @@ describe('Administer articles tell the admin exactly where to go', () => {
   const adminIds = TOPICS.filter((t) => t.group === 'Administer').map((t) => t.id);
 
   it('are ordered as the work goes: orient, set up, sign-in and access, extend, monitor', () => {
-    expect(adminIds).toEqual(['admin-overview', 'admin-how-it-works', 'admin-start', 'admin-general', 'admin-ai', 'admin-https', 'admin-branding', 'admin-saml', 'admin-users', 'admin-security', 'admin-extensions', 'admin-courses', 'admin-web-search', 'admin-shell', 'admin-reports', 'admin-audit']);
+    expect(adminIds).toEqual(['admin-overview', 'admin-how-it-works', 'admin-general', 'admin-ai', 'admin-https', 'admin-branding', 'admin-saml', 'admin-users', 'admin-security', 'admin-extensions', 'admin-courses', 'admin-web-search', 'admin-shell', 'admin-reports', 'admin-audit', 'admin-updates']);
   });
   it('say how to create and update roles', () => {
     expect(body('admin-users')).toContain('Go to **Admin**, then **Users & roles**, then the **Roles** tab.');
@@ -124,7 +124,7 @@ describe('Administer articles tell the admin exactly where to go', () => {
     for (const id of ['admin-general', 'admin-ai', 'admin-https', 'admin-branding', 'admin-saml', 'admin-users', 'admin-security', 'admin-courses', 'admin-web-search', 'admin-audit']) expect(body(id), id).toMatch(/Go to \*\*Admin\*\*, then \*\*[^*]+\*\*/);
   });
   it('use the real page names from the Admin list', () => {
-    const real = ['General', 'Server (AI services)', 'MCP servers', 'Web search', 'HTTPS', 'Branding', 'Users & roles', 'SAML', 'Security (MFA)', 'Courses', 'Audit log'];
+    const real = ['General', 'Server (AI services)', 'MCP servers', 'Web search', 'HTTPS', 'Branding', 'Users & roles', 'SAML', 'Security (MFA)', 'Courses', 'Audit log', 'Updates'];
     const named = [...adminIds.map(body).join('\n').matchAll(/then \*\*([^*]+)\*\*/g)].map((m) => m[1]);
     for (const n of named) if (!/tab$/.test(n)) expect(real, n).toContain(n);
   });

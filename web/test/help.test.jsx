@@ -113,19 +113,44 @@ describe('generated topics', () => {
 });
 
 describe('Help page', () => {
-  it('opens on the first topic and lists topics by group, for a developer', async () => {
+  it('opens on an index of articles, with long categories cut short until "Show more"', async () => {
     page(userWith(ALL));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Help' })).toBeInTheDocument();
+    const main = screen.getByRole('main');
+    expect(screen.queryByRole('navigation', { name: 'Help topics' })).toBeNull(); // the index has no topic list beside it
+    expect(within(main).getByRole('heading', { level: 2, name: 'Get started' })).toBeInTheDocument();
+    expect(within(main).getByRole('link', { name: 'Welcome' })).toBeInTheDocument();
+    // Work with the agent has more than five articles for this reader: only five show until the reader asks for more.
+    expect(within(main).queryByRole('link', { name: 'Choose a model and its settings' })).toBeNull();
+    await userEvent.click(within(main).getAllByRole('button', { name: /Show more/ })[0]);
+    expect(within(main).getByRole('link', { name: 'Choose a model and its settings' })).toBeInTheDocument();
+    expect(within(main).getByRole('button', { name: 'Show fewer' })).toBeInTheDocument();
+  });
+  it('shows a breadcrumb trail: Help, then the category and article', async () => {
+    page(userWith(ALL), '/help/sessions'); await screen.findByRole('heading', { level: 1, name: 'Sessions and long conversations' });
+    const trail = screen.getByRole('navigation', { name: 'breadcrumb' });
+    expect(within(trail).getByRole('link', { name: 'Help' })).toHaveAttribute('href', '/help');
+    expect(within(trail).getByText('Work with the agent')).toBeInTheDocument(); expect(within(trail).getByText('Sessions and long conversations')).toBeInTheDocument();
+  });
+  it('searching the index lists every matching article, without "Show more"', async () => {
+    page(userWith(ALL)); const box = await screen.findByLabelText('Search help'); const main = screen.getByRole('main');
+    await userEvent.type(box, 'compact'); expect(within(main).getByRole('link', { name: 'Sessions and long conversations' })).toBeInTheDocument(); expect(within(main).queryByRole('button', { name: /Show more/ })).toBeNull();
+  });
+  it('opens a topic from the index, and lists topics by group, for a developer', async () => {
+    page(userWith(ALL));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Help' })).toBeInTheDocument();
+    await userEvent.click(within(screen.getByRole('main')).getByRole('link', { name: 'Welcome' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Welcome' })).toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: 'Help topics' });
     expect(within(nav).getByText('Get started')).toBeInTheDocument(); expect(within(nav).getByText('Work with the agent')).toBeInTheDocument(); expect(within(nav).queryByText('Administer')).toBeNull();
     expect(within(nav).getByRole('link', { name: 'Plan mode and Act mode' })).toBeInTheDocument(); expect(within(nav).queryByRole('link', { name: 'Single sign-on (SAML)' })).toBeNull();
   });
   it('shows administration help to administrators', async () => {
-    page(userWith(ADMIN)); const nav = await screen.findByRole('navigation', { name: 'Help topics' });
+    page(userWith(ADMIN), '/help/welcome'); const nav = await screen.findByRole('navigation', { name: 'Help topics' });
     expect(within(nav).getByText('Administer')).toBeInTheDocument(); expect(within(nav).getByRole('link', { name: 'Single sign-on (SAML)' })).toBeInTheDocument(); expect(within(nav).getByRole('link', { name: 'Permission reference' })).toBeInTheDocument();
   });
   it('a user with no permissions still gets useful help', async () => {
-    page(userWith([], { roles: ['nobody'] })); const nav = await screen.findByRole('navigation', { name: 'Help topics' });
+    page(userWith([], { roles: ['nobody'] }), '/help/welcome'); const nav = await screen.findByRole('navigation', { name: 'Help topics' });
     expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Welcome', 'Sign in and stay secure', 'What you can do', 'AI models, tokens, and context', 'What is agentic coding?', 'Use AI safely', 'Your profile', 'Appearance and accessibility', 'Glossary', 'Troubleshooting']);
   });
   it('opens a topic from its address, and navigates when you click', async () => {
@@ -155,7 +180,7 @@ describe('Help page', () => {
     await userEvent.click(screen.getByRole('link', { name: '← Welcome' })); expect(screen.queryByRole('link', { name: /^←/ })).toBeNull();
   });
   it('searches titles and text, only among topics you can see', async () => {
-    page(userWith(ALL)); const box = await screen.findByLabelText('Search help'); const nav = screen.getByRole('navigation', { name: 'Help topics' });
+    page(userWith(ALL), '/help/welcome'); const box = await screen.findByLabelText('Search help'); const nav = screen.getByRole('navigation', { name: 'Help topics' });
     await userEvent.type(box, 'compact'); expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(expect.arrayContaining(['Sessions and long conversations', 'Skills and slash commands'])); expect(within(nav).queryByRole('link', { name: 'Your profile' })).toBeNull();
     await userEvent.clear(box); await userEvent.type(box, 'adfs'); expect(within(nav).queryByRole('link', { name: 'Single sign-on (SAML)' })).toBeNull(); expect(within(nav).getByText(/No topics match/)).toBeInTheDocument();
     await userEvent.clear(box); await userEvent.type(box, 'layout drag'); expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toContain('Your workspace and layout');
@@ -169,6 +194,6 @@ describe('Help in the header', () => {
   });
   it('shows it alongside the other pages for a developer', async () => {
     renderApp(<Layout><div /></Layout>, { user: userWith(ALL) }); await screen.findByRole('link', { name: 'Help' });
-    expect(within(screen.getByRole('navigation', { name: 'Main' })).getAllByRole('link').map((l) => l.textContent)).toEqual(['Agent', 'Chat', 'Profile', 'Help']);
+    expect(within(screen.getByRole('navigation', { name: 'Main' })).getAllByRole('link').map((l) => l.textContent)).toEqual(['Chat', 'Agent']);
   });
 });

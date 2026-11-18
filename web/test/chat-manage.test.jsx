@@ -188,17 +188,10 @@ describe('chat skills and the processing indicator', () => {
   const profile = (user, route = '/profile/chat-skills', routes = {}) => renderApp(<Profile />, { route, user, routes: { '/api/profile/prompts': { defaults: {}, overrides: {} }, '/api/auth/sessions': [], ...routes } });
   const CHAT_SKILLS = [{ key: 'summarize', name: 'summarize', scope: 'chat', builtin: true, enabled: true, modified: false, description: 'Summarize text', instructions: 'x', defaults: {} }];
 
-  it('Profile has separate "Agent skills" and "Chat skills" sections', async () => {
+  it('Profile has separate "Agent skills" and "Chat skills" pages, each at its own address', async () => {
     profile(userWith(BOTH), '/profile/skills', { '/api/skills': [] });
-    const nav = await screen.findByRole('navigation', { name: 'Profile' });
-    expect(within(nav).getByRole('link', { name: 'Agent skills' })).toBeInTheDocument();
-    expect(within(nav).getByRole('link', { name: 'Chat skills' })).toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'Skills' })).toBeNull();
-  });
-  it('Chat skills is hidden from a role that cannot chat', async () => {
-    profile(userWith(['agent.plan', 'provider.use']), '/profile/skills', { '/api/skills': [] });
-    const nav = await screen.findByRole('navigation', { name: 'Profile' });
-    expect(within(nav).queryByRole('link', { name: 'Chat skills' })).toBeNull();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Agent skills' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Profile' })).toBeNull(); // no side list: the pages are in the menu under the name
   });
   it('the Chat skills section loads and edits the chat scope', async () => {
     const { fetch } = profile(userWith(BOTH), '/profile/chat-skills', { '/api/skills': CHAT_SKILLS, 'PUT /api/skills/builtin/summarize': { ok: true } });

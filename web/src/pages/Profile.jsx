@@ -1,36 +1,28 @@
 import { useEffect, useState } from 'react';
-import { Box, Typography, Tabs, Tab, TextField, Button, Stack, Alert, Paper, Chip, Select, MenuItem, ListItemButton, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemText, FormControl, InputLabel, FormControlLabel, FormGroup, Switch, ToggleButton, ToggleButtonGroup } from '@mui/material';
+import { Box, Typography, Tabs, Tab, TextField, Button, Stack, Alert, Paper, Chip, Select, MenuItem, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemText, FormControl, InputLabel, FormControlLabel, FormGroup, Switch, ToggleButton, ToggleButtonGroup } from '@mui/material';
 import { useColorMode } from '../colorMode.jsx';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 import { get, post, put } from '../api.js';
 import { useAuth } from '../AuthContext.jsx';
 import SkillsManager from '../components/SkillsManager.jsx';
-import SectionShell from '../components/SectionShell.jsx';
+import { CONTENT_MAX_WIDTH } from '../components/SectionShell.jsx';
+import ContactFooter from '../components/ContactFooter.jsx';
+import { profileSectionsFor } from '../profileSections.js';
 import { useTutorial } from '../tour/TutorialProvider.jsx';
 import { UserMcpServers } from '../components/McpServers.jsx';
 import MemoryManager from '../components/MemoryManager.jsx';
 
 const KINDS = [['plan', 'Plan mode'], ['act', 'Act mode'], ['chat', 'Coding chat'], ['general', 'General chat'], ['course', 'Course Design chat']];
 
-const SECTIONS = [
-  { path: 'account', label: 'Account' },
-  { path: 'prompts', label: 'System prompts', anyOf: ['agent.plan', 'chat.use', 'chat.general.use', 'chat.course.use'] },
-  { path: 'skills', label: 'Agent skills', perm: 'agent.plan' },
-  { path: 'chat-skills', label: 'Chat skills', anyOf: ['chat.use', 'chat.general.use', 'chat.course.use'] },
-  { path: 'mcp', label: 'MCP servers', perm: 'mcp.use' },
-  { path: 'memory', label: 'Memory', perm: 'memory.use' },
-  { path: 'web-search', label: 'Web search', perm: 'websearch.use' },
-  { path: 'security', label: 'Security' },
-];
-
-// Profile uses the same sidebar-per-section layout as Admin, so no single page grows long.
+// Each profile page has its own address. The account menu under the user's name links to them.
 export default function Profile() {
   const { user, can } = useAuth(); const loc = useLocation();
   if (!user) return null;
-  const sections = SECTIONS.filter((s) => (s.perm ? can(s.perm) : s.anyOf ? s.anyOf.some(can) : true));
+  const sections = profileSectionsFor(can);
   const current = sections.find((s) => loc.pathname.replace(/\/+$/, '').endsWith(`/profile/${s.path}`)) || sections[0];
   return (
-    <SectionShell contact ariaLabel="Profile" tour="profile-sections" items={sections.map((s) => ({ to: `/profile/${s.path}`, label: s.label, selected: current.path === s.path }))}>
+    <Box sx={{ p: 3, overflow: 'auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%' }}>
         <Typography variant="h5" component="h1" gutterBottom>{current.label}</Typography>
         {current.path === 'account' && <AccountSection />}
         {current.path === 'prompts' && <PromptsSection />}
@@ -40,7 +32,9 @@ export default function Profile() {
         {current.path === 'memory' && <MemorySection />}
         {current.path === 'web-search' && <WebSearchSection />}
         {current.path === 'security' && <SecuritySection />}
-    </SectionShell>
+      </Box>
+      <Box sx={{ maxWidth: CONTENT_MAX_WIDTH, width: '100%', mt: 'auto', display: 'flex', flexDirection: 'column' }}><ContactFooter /></Box>
+    </Box>
   );
 }
 
