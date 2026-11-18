@@ -32,6 +32,7 @@ export const TOOL_DEFS = {
     next_steps: strList('Up to four short, concrete actions the user could take next. Each must stand alone as an instruction they can click to send back to you, e.g. "Add tests for the login route".'),
     needs: str('For "partial" or "blocked" only: the exact question, decision, or access you need from the user to continue.') }, required: ['summary', 'status'] }, mutating: false },
   switch_mode: { name: 'switch_mode', description: 'Plan mode: recommend that the user switch to Act mode so you can make changes (the user must confirm). Act mode: revert to read-only Plan mode, e.g. when the work turns out to be risky or the plan is wrong. Ends your turn.', parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['act', 'plan'], description: "'act' (only valid from Plan mode) or 'plan' (only valid from Act mode)" }, reason: str('Why, in one or two sentences, shown to the user') }, required: ['mode', 'reason'] }, mutating: false },
+  search_history: { name: 'search_history', description: 'Search the full text of the earlier conversation that your summary replaced. Use it when you need an exact detail the summary may have lost: a number, a name, a file path, the exact wording of a decision or request. Returns matching excerpts with their message numbers. Case-insensitive; the search is plain text, not a pattern.', parameters: { type: 'object', properties: { query: str('Text to look for') }, required: ['query'] }, mutating: false },
   list_changes: { name: 'list_changes', description: 'Show files changed since a checkpoint (default: the latest one) with a unified diff. Read-only; use it to review recent work.', parameters: { type: 'object', properties: { checkpoint: str('Checkpoint id (optional)') } }, mutating: false },
   spawn_agent: { name: 'spawn_agent', description: "Start a subagent (a focused child agent) to work on one specific task and report back. The subagent cannot see this conversation, so the task must be fully self-contained. Call this several times in one message to run subagents in parallel. Subagents default to read-only 'plan' mode; 'act' (Act mode only) lets one edit files, and act subagents run one at a time.", parameters: { type: 'object', properties: { task: str('Complete, self-contained instructions: the goal, relevant paths, constraints, and exactly what to report back'), mode: { type: 'string', enum: ['plan', 'act'], description: "'plan' = read-only investigation (default); 'act' = may edit files (Act mode only)" }, name: str('Short label shown to the user, e.g. "audit auth routes"') }, required: ['task'] }, mutating: false },
   use_skill: { name: 'use_skill', description: "Load one of the user's saved skills (reusable instructions) by name and follow them.", parameters: { type: 'object', properties: { name: str('Skill name from the available list') }, required: ['name'] }, mutating: false },
@@ -51,7 +52,7 @@ export const TOOL_DEFS = {
 };
 
 // Server-side tool registry. Plan mode never sees mutating tools; shell requires exec mode + permission.
-export function getToolsFor({ execMode, agentMode, permissions, skills, subagents, isSubagent, memory, mcp, webSearch, toolDeny, courseDesign }) {
+export function getToolsFor({ execMode, agentMode, permissions, skills, subagents, isSubagent, memory, mcp, webSearch, toolDeny, courseDesign, history }) {
   const has = (p) => (permissions instanceof Set ? permissions.has(p) : permissions.includes(p));
   const withScopes = (t) => (t.name === 'save_memory' || t.name === 'read_memory') ? { ...t, parameters: { ...t.parameters, properties: { ...t.parameters.properties, scope: { ...t.parameters.properties.scope, enum: memory.scopes } } } } : t;
   // Tools an exercise's rules take away (also re-checked when a tool runs, because runTool asks this function what is offered).
@@ -62,6 +63,7 @@ export function getToolsFor({ execMode, agentMode, permissions, skills, subagent
     if (t.name === 'web_search') return !!webSearch;                                                 // only when tenant, profile, and this session all allow it
     if (t.name === 'save_memory' || t.name === 'read_memory') return !isSubagent && !!memory?.scopes?.length;                   // only when memory is switched on for the user and/or project
     if (t.name === 'use_skill' && !(skills?.length)) return false;
+    if (t.name === 'search_history') return !!history?.available && !isSubagent;                 // only when a summary has archived earlier messages (a subagent cannot see them)
     if (t.name === 'spawn_agent') return !!subagents && !isSubagent;                               // model must support it; children never spawn children
     if (isSubagent && ['switch_mode', 'propose_plan', 'ask_user', 'use_skill'].includes(t.name)) return false; // those talk to the user, which a subagent cannot
     if (t.name === 'switch_mode' && agentMode === 'plan' && !has('agent.act')) return false; // nothing to recommend if the user can't act
@@ -326,6 +328,7 @@ async function runTool(name, args, ctx, meta) {
         if (ctx.agentMode === 'act' && to === 'plan') { ctx.onModeChange?.({ to: 'plan', reason }); return 'Switched back to Plan mode. Your turn ends here.'; }
         return `Error: cannot switch to "${to}" from ${ctx.agentMode} mode (Plan mode may only recommend "act"; Act mode may only revert to "plan").`;
       }
+      case 'search_history': return ctx.history?.search ? await ctx.history.search(String(args.query ?? '')) : 'No earlier conversation is archived in this session.';
       case 'list_changes': {
         const r = await changesSince(ctx.projectId, ctx.root, args.checkpoint, { dataDir: ctx.dataDir });
         if (r.note && !r.files.length) return r.note;

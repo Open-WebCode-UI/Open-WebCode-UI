@@ -226,6 +226,13 @@ export const ModeChangedNote = ({ item }) => (
   </Paper>
 );
 
+// How many tokens the compaction freed: the context before and after it, and the difference. A summary longer than what it replaced frees nothing.
+export function tokenNote({ before, after, freed }) {
+  const n = (x) => Number(x).toLocaleString();
+  if (freed > 0) return `Freed ${n(freed)} tokens: the context went from ${n(before)} to ${n(after)}.`;
+  return `The summary is ${n(-freed)} tokens longer than the context it replaced (${n(before)} to ${n(after)}).`;
+}
+
 // Marks the point where earlier messages left the agent's context. The summary is kept so the user can see what carried over.
 export function CompactedCard({ item }) {
   const [open, setOpen] = useState(false);
@@ -233,7 +240,10 @@ export function CompactedCard({ item }) {
     <Paper variant="outlined" data-testid="compacted" sx={{ borderStyle: 'dashed' }}>
       <ButtonBase onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Context compacted" sx={{ width: '100%', justifyContent: 'flex-start', gap: 1, px: 1.25, py: 0.75, textAlign: 'left' }}>
         <CompressIcon fontSize="small" color="action" />
-        <Typography variant="body2" sx={{ flexGrow: 1 }}>Context compacted: {item.archived} earlier message{item.archived === 1 ? '' : 's'} summarized</Typography>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Typography variant="body2">Context compacted: {item.archived} earlier message{item.archived === 1 ? '' : 's'} summarized</Typography>
+          {item.tokens && <Typography variant="caption" color="text.secondary" display="block" title="Counted the way the context meter counts: about 4 characters per token, including the system prompt.">{tokenNote(item.tokens)}</Typography>}
+        </Box>
         <ExpandMoreIcon fontSize="small" sx={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
       </ButtonBase>
       <Collapse in={open} unmountOnExit><Box sx={{ px: 1.5, py: 1, borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover' }}><Typography variant="caption" color="text.secondary">What the agent remembers</Typography><Markdown>{item.summary}</Markdown></Box></Collapse>

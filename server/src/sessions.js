@@ -6,7 +6,8 @@ import { normalizeConclusion } from './agent/conclusion.js';
 const now = () => Math.floor(Date.now() / 1000);
 
 export async function loadMessages(convId) {
-  return (await getKnex()('messages').where({ conversation_id: convId, archived: 0, rolled_back: 0 }).orderBy('id').select('content')).map((r) => JSON.parse(r.content));
+  // A summary row keeps its compaction stats (for the timeline); the model never sees them.
+  return (await getKnex()('messages').where({ conversation_id: convId, archived: 0, rolled_back: 0 }).orderBy('id').select('content')).map((r) => { const m = JSON.parse(r.content); delete m.compaction; return m; });
 }
 // events: checkpoints taken during the turn, each with `offset` = how many of the new messages preceded it.
 export async function persistFrom(convId, messages, fromIndex, events = []) {
@@ -97,7 +98,7 @@ export function buildTimeline(rows, { pendingPlan = null, events = [] } = {}) {
   function buildItems(m) {
     // Archived messages have left the agent's context but stay on screen, above the marker that closed them off.
     if (m._kind === 'summary_ack') return;
-    if (m._kind === 'summary') { items.push({ kind: 'compacted', summary: m.content.replace(/^\[[^\]]*\]\s*/, ''), archived }); archived = 0; return; }
+    if (m._kind === 'summary') { items.push({ kind: 'compacted', summary: m.content.replace(/^\[[^\]]*\]\s*/, ''), archived: m.compaction?.archived ?? archived, tokens: m.compaction?.tokens ?? null }); archived = 0; return; }
     if (m._kind === 'cleared') { items.push({ kind: 'cleared', archived }); archived = 0; return; }
     if (!m._rolledBack) archived += 1;
     if (m.role === 'user') items.push({ kind: 'user', text: m.display ?? m.content, ...(m.attachments?.length ? { attachments: m.attachments.map((a) => ({ name: a.name, kind: a.kind })) } : {}) });
@@ -138,15 +139,18 @@ export function renderTranscript(messages, maxChars = 300_000) {
 }
 export const COMPACT_MARKER = '[Summary of the earlier conversation, which was compacted to save context]';
 
+// The assistant's reply that closes a summary. It tells the agent where the full text is, so it can look up an exact detail.
+export const COMPACT_ACK = 'Understood. I have the summary of our earlier work and will continue from there. The full earlier conversation is archived in this session, and search_history finds exact details in it.';
+
 // Archives the live messages (kept in the database, but no longer sent to the model) and, with a summary,
-// starts the new context from it. Returns how many messages were archived.
-export function archiveAndRestart(convId, summary) {
+// starts the new context from it. `tokens` ({ before, after, freed }) is stored with the summary. Returns how many messages were archived.
+export function archiveAndRestart(convId, summary, tokens = null) {
   return trx(getKnex(), async (t) => {
     const n = await t('messages').where({ conversation_id: convId, archived: 0 }).update({ archived: 1 });
-    const add = (role, content, kind) => t('messages').insert({ conversation_id: convId, role, content: JSON.stringify({ role, content }), kind });
+    const add = (role, content, kind, extra = {}) => t('messages').insert({ conversation_id: convId, role, content: JSON.stringify({ role, content, ...extra }), kind });
     if (summary) {
-      await add('user', `${COMPACT_MARKER}\n\n${summary}`, 'summary');
-      await add('assistant', 'Understood. I have the summary of our earlier work and will continue from there.', 'summary_ack');
+      await add('user', `${COMPACT_MARKER}\n\n${summary}`, 'summary', { compaction: { archived: n, tokens } });
+      await add('assistant', COMPACT_ACK, 'summary_ack');
     } else {
       await add('user', '[The earlier conversation was cleared. Start fresh.]', 'cleared');
       await add('assistant', 'Understood. Starting fresh.', 'summary_ack');
@@ -154,6 +158,25 @@ export function archiveAndRestart(convId, summary) {
     await t('conversations').where({ id: convId }).update({ updated_at: now() });
     return n;
   });
+}
+// The full text of the earlier conversation: messages that were archived. The agent searches it with search_history.
+export async function hasArchivedMessages(convId) {
+  return !!(await getKnex()('messages').where({ conversation_id: convId, archived: 1, rolled_back: 0 }).first('id'));
+}
+export async function searchArchive(convId, query, { limit = 8, radius = 160 } = {}) {
+  const q = String(query ?? '').trim().toLowerCase();
+  if (!q) return 'Give some text to search for.';
+  const rows = await getKnex()('messages').where({ conversation_id: convId, archived: 1, rolled_back: 0 }).whereIn('role', ['user', 'assistant', 'tool']).orderBy('id').select('role', 'content');
+  const hits = []; let total = 0;
+  rows.forEach((r, i) => {
+    const m = JSON.parse(r.content), text = String(m.display ?? m.content ?? '');
+    const at = text.toLowerCase().indexOf(q);
+    if (at < 0) return;
+    total += 1;
+    if (hits.length < limit) hits.push(`Archived message ${i + 1} (${r.role}): …${text.slice(Math.max(0, at - radius), at + q.length + radius).replace(/\s+/g, ' ')}…`);
+  });
+  if (!total) return `No match for "${String(query).trim()}" in the earlier conversation.`;
+  return `${total} match${total === 1 ? '' : 'es'} in the earlier conversation${total > hits.length ? `, showing the first ${hits.length}` : ''}:\n${hits.join('\n')}`;
 }
 export const COMMAND_RE = /^\/(compact|clear)(?:\s+([\s\S]*))?$/i;
 

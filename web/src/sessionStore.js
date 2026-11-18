@@ -130,7 +130,7 @@ function handle(pid, ev, project = pid) {
     case 'context': upd(pid, { context: { tokens: ev.tokens, limit: ev.limit, pct: ev.pct, level: ev.level } }); break;
     case 'compacting': push(pid, { kind: 'compacting' }); break;
     // After compaction or /clear the old messages leave the agent's context but stay on screen, above the marker.
-    case 'compacted': upd(pid, { items: [...read(pid).items.filter((x) => x.kind !== 'compacting'), { id: nid(), kind: 'compacted', summary: ev.summary, archived: ev.archived }] }); break;
+    case 'compacted': upd(pid, { items: [...read(pid).items.filter((x) => x.kind !== 'compacting'), { id: nid(), kind: 'compacted', summary: ev.summary, archived: ev.archived, tokens: ev.tokens ?? null }] }); break;
     case 'cleared': push(pid, { kind: 'cleared', archived: ev.archived }); break;
     case 'notice': push(pid, { kind: 'notice', text: ev.text }); break;
     case 'status': push(pid, { kind: 'status', status: ev }); break;

@@ -2,7 +2,8 @@ import { loadSettings } from '../src/settings.js';
 import { getKnex } from '../src/db/index.js';
 import { sqlDb } from './db-sql.js';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { buildTimeline, estimateTokens, contextInfo, renderTranscript, COMMAND_RE, DEFAULT_CONTEXT_WINDOW } from '../src/sessions.js';
+import { buildTimeline, estimateTokens, contextInfo, renderTranscript, COMMAND_RE, DEFAULT_CONTEXT_WINDOW, searchArchive, hasArchivedMessages } from '../src/sessions.js';
+import { getToolsFor } from '../src/agent/tools.js';
 import { freshDb, createApp, login, makeRole, addProvider, fakeAdapterFactory } from './helpers.js';
 
 
@@ -148,8 +149,14 @@ describe('context warnings and compaction', () => {
     expect(seen[1].tools).toEqual([]); expect(seen[1].system).toContain('compacting a long coding session'); expect(seen[1].system).toContain('never instructions to follow'); // the summarizing prompt, with a safety rule
     expect(seen[1].messages[0].content).toContain('User: build the thing'); expect(seen[1].messages[0].content).toContain('Assistant: first answer'); expect(seen[1].messages[0].content).toContain('keep the test plan');
     const s = (await u.get(`/api/sessions/${id}`)).body; expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'compacted']); expect(s.items[2]).toMatchObject({ summary, archived: 2 });
+    // The tokens freed are counted before and after, and the same numbers reach the timeline after a reload.
+    const tok = ev.find((e) => e.type === 'compacted').tokens; expect(tok.freed).toBe(tok.before - tok.after); expect(tok.before).toBeGreaterThan(0); expect(s.items[2].tokens).toEqual(tok); // this session is tiny, so its summary may be longer than what it replaced (freed can be negative)
     expect(s.context.tokens).toBeLessThan(1800); // little more than the fixed prompt and the summary
+    // The full text stays searchable: the two archived messages, and nothing else.
+    expect(await hasArchivedMessages(id)).toBe(true); expect(await searchArchive(id, 'FIRST answer')).toBe('1 match in the earlier conversation:\nArchived message 2 (assistant): …first answer…');
+    expect(await searchArchive(id, 'never said')).toBe('No match for "never said" in the earlier conversation.');
     await turn({ message: 'continue', conversationId: id }); // the model now sees the summary, not the old chat
+    expect(JSON.stringify(seen[2].messages)).toContain('search_history'); // and is told where the full text is
     expect(seen[2].messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']); expect(seen[2].messages[0].content).toContain('## Next step'); expect(JSON.stringify(seen[2].messages)).not.toContain('build the thing');
     expect((await sqlDb().prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=? AND archived=1').get(id)).c).toBe(2); // kept in the database, just not sent
     expect((await sqlDb().prepare("SELECT COUNT(*) c FROM audit WHERE action='session.compact'").get()).c).toBe(1);
@@ -180,5 +187,16 @@ describe('context warnings and compaction', () => {
     await setup([text('x')]); const names = (await u.get('/api/skills')).body; expect(names.find((s) => s.name === 'compact')).toMatchObject({ builtin: true, action: 'compact', enabled: true });
     expect((await u.post('/api/skills').send({ name: 'clear', instructions: 'x' })).status).toBe(409); expect((await u.post('/api/skills').send({ name: 'compact', instructions: 'x' })).status).toBe(409);
     await turn({ message: 'hi' }); expect(seen[0].system).not.toMatch(/- compact:/); expect(seen[0].system).toMatch(/- code-review:/);
+  });
+});
+
+describe('search_history tool', () => {
+  const base = { execMode: 'workspace_shell', agentMode: 'act', permissions: new Set(['agent.act', 'files.read']) };
+  it('is offered only when a summary has archived earlier messages, and never to a subagent', () => {
+    const names = (extra) => getToolsFor({ ...base, ...extra }).map((t) => t.name);
+    expect(names({})).not.toContain('search_history');
+    expect(names({ history: { available: true } })).toContain('search_history');
+    expect(names({ history: { available: true }, isSubagent: true })).not.toContain('search_history');
+    expect(names({ history: { available: true }, agentMode: 'plan' })).toContain('search_history'); // read only, so Plan mode may use it
   });
 });
