@@ -1112,6 +1112,8 @@ Go to **Admin**, then **Web search**.
 > [!INFO]
 > To turn the feature off for everyone, toggle **Allow web search for this organization** off again.
 
+For step-by-step setup, see the guides for the [Brave Search API](#search-brave) and [SearXNG](#search-searxng).
+
 ## Who can use it
 Three switches must all be on: yours (the organization), the user's own (**Profile**, then **Web search**), and the chat's. The role also needs the web search permission, which the Developer role has by default. On the chat page, each tab has its own web search permission too.
 

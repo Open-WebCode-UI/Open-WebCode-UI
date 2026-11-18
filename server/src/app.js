@@ -9,6 +9,7 @@ import { errorHandler, registry } from './http.js';
 import { authRouter } from './routes/auth.js';
 import { samlRouter } from './auth/saml.js';
 import { adminRouter } from './routes/admin.js';
+import { updateRouter } from './routes/update.js';
 import { apiKeysRouter } from './routes/apikeys.js';
 import { apiDocsRouter } from './routes/apidocs.js';
 import { v1Router } from './routes/v1.js';
@@ -76,6 +77,7 @@ export function createApp({ deps = {} } = {}) {
   app.use(authRouter());
   app.use(samlRouter());
   app.use(adminRouter({ webSearch: deps.webSearch }));
+  app.use(updateRouter());
   app.use(apiKeysRouter());
   app.use(apiDocsRouter());
   app.use(providersRouter({ adapterFactory: deps.adapterFactory, lookup: deps.lookup }));

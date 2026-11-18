@@ -1,7 +1,8 @@
 // Step-by-step setup guides for each AI provider an administrator can add under Admin > Server (AI services).
-// One guide per connection type in admin/Servers.jsx. Every guide needs 'provider.read', like "Connect AI models".
-// Style: short, friendly, active voice. Names of fields and buttons match the dialog exactly.
+// Guides for AI providers (one per connection type in admin/Servers.jsx, needs 'provider.read') and for web search services
+// (Admin > Web search, needs 'settings.read'). Style: short, friendly, active voice. Names of fields and buttons match the screen exactly.
 const ADMIN_AI = { requires: 'provider.read', group: 'Integration guides' };
+const ADMIN_SEARCH = { requires: 'settings.read', group: 'Integration guides' };
 
 export const INTEGRATION_TOPICS = [
   { id: 'ai-providers', title: 'Choose a provider', ...ADMIN_AI, body: `
@@ -75,7 +76,7 @@ Select **Test** on the card. A green message lists how many models OpenAI offers
 Connect Anthropic's hosted API to use the Claude models.
 
 ## What you need
-- An Anthropic Console account with billing set up.
+- An [Anthropic Platform Console](https://platform.claude.com) account with billing set up.
 - An API key from the **API keys** page of the Claude Console. Name it after this app.
 
 ## Connect it
@@ -440,4 +441,95 @@ Start here when **Connect & load models** or **Test** fails. The message under t
 
 > [!INFO]
 > The app never shows a stored key. If you doubt it, enter a new one. The old key stays valid at the provider until you revoke it there.` },
+
+  { id: 'search-brave', title: 'Brave Search API', ...ADMIN_SEARCH, body: `
+Give the model web search through Brave's own search index. Brave answers each search with its results, and the app passes them to the model as untrusted text.
+
+## What you need
+- A Brave Search API subscription, from the [Brave Search API dashboard](https://api-dashboard.search.brave.com). Choose a plan that includes the Search API, and check Brave's current pricing, because plans change.
+- An API key from that subscription. Name it after this app so you can find it later.
+
+## Connect it
+1. Go to **Admin**, then **Web search**.
+2. Under **Search service**, pick **Brave Search API** in the **Service** list.
+3. Paste your key into **API key**.
+4. Select **Save**, then confirm it's you when the prompt appears.
+5. Select **Test saved settings**.
+6. Toggle **Allow web search for this organization** on.
+
+## Check it
+A green message says the service answered with results. Then open **Chat** as a user, turn on **Web search** in the chat's settings, and ask something that needs current information, such as the latest release of a library. The reply should cite the URLs it used.
+
+## Good to know
+- Each search returns at most 8 results. Each user can run 20 searches a minute.
+- Search words go to Brave. Tell your users, and check Brave's terms for your organization.
+- The app stores the key encrypted and never shows it again. To replace it, type a new key. To keep the current one, leave the box empty when you save.
+- The key is for the Search API, not for your Brave browser account. A key from another Brave product does not work here.
+- Switch the feature off for everyone with **Allow web search for this organization**.
+
+## If it fails
+- **"Test failed: web search failed (search service returned 401)":** the key is wrong, or someone revoked it. Create a new key and save it.
+- **"Test failed: web search failed (search service returned 403)":** the key's plan does not include the Search API. Check the subscription.
+- **"Test failed: web search failed (search service returned 429)":** you have used up the plan's request limit, or you have sent too many requests. Wait, or change the plan.
+- **"web search failed (search timed out)":** the server cannot reach Brave. Check firewalls, proxies, and DNS on the app's server.` },
+
+  { id: 'search-searxng', title: 'SearXNG', ...ADMIN_SEARCH, body: `
+Give the model web search through your own SearXNG instance. SearXNG is an open-source metasearch engine: it asks several search engines and returns one combined list. You need no key, and your search words go only to the instance you run.
+
+> [!INFO]
+> Many public SearXNG instances turn off JSON output or limit requests from servers. A self-hosted instance is the reliable choice.
+
+## What you need
+- A running SearXNG instance with an address the app's server can reach, such as \`https://searx.example.com\`.
+- JSON output turned on in that instance. The app reads the instance's JSON results and cannot use the HTML page.
+
+## Run an instance with Docker
+This starts SearXNG on port \`8080\` and keeps its settings in a \`searxng\` folder:
+
+\`\`\`bash
+docker run -d --name searxng -p 8080:8080 \\
+  -v "$PWD/searxng:/etc/searxng:rw" \\
+  -e "BASE_URL=http://localhost:8080/" \\
+  searxng/searxng
+\`\`\`
+
+Then open \`searxng/settings.yml\` in that folder and add \`json\` to the list of formats under \`search\`:
+
+\`\`\`yaml
+search:
+  formats:
+    - html
+    - json
+\`\`\`
+
+Restart the container with \`docker restart searxng\`. Check the JSON output in a browser: \`http://localhost:8080/search?q=test&format=json\` should return a JSON document, not a page.
+
+Put the instance behind HTTPS with your reverse proxy before you connect it to users, and set \`BASE_URL\` to that address.
+
+## Connect it
+1. Go to **Admin**, then **Web search**.
+2. Under **Search service**, pick **SearXNG (self-hosted)** in the **Service** list.
+3. Enter the instance's address in **SearXNG address**, such as \`https://searx.example.com\`. Enter the base address only, without \`/search\` at the end.
+4. Turn on **Allow a private or local address (for an instance inside your network)** only if the address is on a private network, such as \`http://192.168.1.20:8080\` or \`localhost\`.
+5. Select **Save**, then confirm it's you when the prompt appears.
+6. Select **Test saved settings**.
+7. Toggle **Allow web search for this organization** on.
+
+## Check it
+A green message says the service answered with results. Then open **Chat** as a user, turn on **Web search** in the chat's settings, and ask something that needs current information. The reply should cite the URLs it used.
+
+## Good to know
+- Each search returns at most 8 results. Each user can run 20 searches a minute.
+- You choose which engines your instance uses. Its own settings decide the results, so check them as you would any search service.
+- The app checks the address when you save and again on every search, because a name can change to point somewhere else.
+- SearXNG needs no key. The app cannot send a key or a login, so run the instance without one for this use.
+- Switch the feature off for everyone with **Allow web search for this organization**.
+
+## If it fails
+- **"Enter the address of your SearXNG instance.":** the **SearXNG address** box is empty. Enter the address and save again.
+- **"Test failed: web search failed (search service returned 403)" or "429":** the instance's bot limiter is blocking the app's server. For an instance you run yourself, turn off the limiter in its \`settings.yml\` (\`server:\` then \`limiter: false\`), or allow the app's server address. Then restart the instance.
+- **"Test failed: web search failed (search service returned 404)":** the address is wrong, or it includes \`/search\`. Enter the base address only.
+- **A message about an unexpected character or invalid JSON:** JSON output is off. Add \`json\` under \`search\` > \`formats\` and restart the instance.
+- **"web search failed (search timed out)":** the server cannot reach the instance. Check the address, the port, and firewalls.
+- **Saving fails with a blocked-address message:** the address points to a private or local network address. Turn on **Allow a private or local address (for an instance inside your network)**. Turn on **Allow a private or local address (for an instance inside your network)**.` },
 ];

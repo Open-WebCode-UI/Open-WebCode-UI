@@ -57,7 +57,9 @@ describe('integration guides', () => {
     for (const id of Object.values(GUIDE_FOR)) expect(guides.find((g) => g.id === id).body, id).toContain('Go to **Admin**, then **Server (AI services)**, and select **Add connection**.');
   });
   it('are visible to people who manage AI connections, and to nobody else', () => {
-    expect(ids(['provider.read'])).toEqual(expect.arrayContaining(guides.map((g) => g.id)));
+    expect(ids(['provider.read'])).toEqual(expect.arrayContaining(guides.filter((g) => g.requires === 'provider.read').map((g) => g.id)));
+    expect(ids(['settings.read'])).toEqual(expect.arrayContaining(guides.filter((g) => g.requires === 'settings.read').map((g) => g.id)));
+    expect(ids(['provider.read'])).not.toContain('search-brave');
     expect(ids(['settings.read', 'user.read'])).not.toContain('ai-openai');
     expect(ids(BUILTIN_ROLES.developer.permissions).filter((i) => guides.some((g) => g.id === i))).toEqual([]);
   });

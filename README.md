@@ -44,6 +44,18 @@ npm run build && npm start   # production
 
 If `SUPERADMIN_PASSWORD` is unset, a random admin password is printed once on first start. See [.env.example](.env.example) for all options, including HTTPS and reverse-proxy settings.
 
+## Updating
+
+Releases are git tags named `vMAJOR.MINOR.PATCH` (semantic versioning), and the `version` in the root `package.json` matches the tag. Updates come from the public repository; set `UPDATE_REPO_URL` to use another one.
+
+```sh
+npm run update -w server                 # install the newest release (fetch, install, build; rolls back on failure)
+npm run update -w server -- check        # report the installed and newest versions
+npm run update -w server -- apply 1.2.0  # install a specific newer release
+```
+
+The same flow is available to administrators over `GET /api/admin/update`, `POST /api/admin/update/check` and `POST /api/admin/update/apply` (step-up MFA required). An update needs a git checkout with no local changes to tracked files. Restart the server afterwards; the running process keeps the code it started with.
+
 ## Development
 
 ```sh

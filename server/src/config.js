@@ -27,6 +27,8 @@ export const config = {
   // Set ALLOW_INSECURE_DEV=1 to permit http cookies during local development.
   allowInsecureDev: process.env.ALLOW_INSECURE_DEV === '1',
   superAdminPassword: process.env.SUPERADMIN_PASSWORD || '',
+  // The repository whose release tags (vMAJOR.MINOR.PATCH) the update flow checks and installs from.
+  updateRepo: process.env.UPDATE_REPO_URL || 'https://github.com/Open-WebCode-UI/Open-WebCode-UI.git',
   // True when an administrator-managed server is serving plain HTTP (not chosen yet, or no HTTPS chosen).
   plainHttp: false,
   isProd: process.env.NODE_ENV === 'production',
