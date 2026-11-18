@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, waitFor, act } from '@testing-library/react';
+import { render, screen, within, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AgentPanel from '../src/components/AgentPanel.jsx';
 import SessionsPanel, { timeAgo } from '../src/components/SessionsPanel.jsx';
@@ -134,12 +134,19 @@ describe('context banner, compacting, and clearing', () => {
   const banner = (level, pct) => render(<ContextBanner context={{ tokens: pct * 1000, limit: 100000, pct, level }} busy={false} onCompact={vi.fn()} onClear={vi.fn()} onNew={vi.fn()} />);
   it('is silent when fine, friendly when long, and firmer when almost full', () => {
     const { container } = render(<ContextBanner context={{ tokens: 5000, limit: 100000, pct: 5, level: 'ok' }} />); expect(container.textContent).toBe('');
-    banner('warn', 65); expect(screen.getByTestId('context-banner')).toHaveTextContent(/getting long \(about 65k of 100k tokens, 65%\)/);
+    banner('warn', 65); expect(screen.getByTestId('context-pie')).toHaveTextContent('Context 65.0% full (65,000 of 100,000 tokens)'); expect(screen.queryByTestId('context-banner')).toBeNull(); // over half full: the pie only
   });
-  it('the high-level message says to compact now', () => { banner('high', 90); expect(screen.getByTestId('context-banner')).toHaveTextContent(/almost full[\s\S]*Compact it now/); expect(screen.getByTestId('context-banner').dataset.level).toBe('high'); });
+  it('the high-level alert gives the exact numbers and suggests /compact', () => { banner('high', 90); expect(screen.getByTestId('context-banner')).toHaveTextContent('This session is 90.0% full (90,000 of 100,000 tokens). Type /compact to summarize it'); expect(screen.getByTestId('context-banner').dataset.level).toBe('high'); expect(screen.getByTestId('context-pie')).toBeInTheDocument(); });
+  it('the alert can be dismissed; the pie stays, and the alert returns once the context drops and fills again', () => {
+    const { rerender } = render(<ContextBanner context={{ tokens: 90000, limit: 100000, pct: 90, level: 'high' }} busy={false} onCompact={vi.fn()} onClear={vi.fn()} onNew={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss context warning' })); expect(screen.queryByTestId('context-banner')).toBeNull(); expect(screen.getByTestId('context-pie')).toBeInTheDocument();
+    rerender(<ContextBanner context={{ tokens: 60000, limit: 100000, pct: 60, level: 'warn' }} busy={false} onCompact={vi.fn()} onClear={vi.fn()} onNew={vi.fn()} />);
+    rerender(<ContextBanner context={{ tokens: 85000, limit: 100000, pct: 85, level: 'high' }} busy={false} onCompact={vi.fn()} onClear={vi.fn()} onNew={vi.fn()} />);
+    expect(screen.getByTestId('context-banner')).toBeInTheDocument();
+  });
   it('offers Compact, Clear, and New session, which do what they say', async () => {
-    const { fetch } = panel({ 'POST /api/agent/turn': () => sse({ type: 'start', conversationId: 1 }, ctx('warn', 70), { type: 'done' }) });
-    await type('hello'); await send(); const b = await screen.findByTestId('context-banner'); expect(b.dataset.level).toBe('warn');
+    const { fetch } = panel({ 'POST /api/agent/turn': () => sse({ type: 'start', conversationId: 1 }, ctx('high', 90), { type: 'done' }) });
+    await type('hello'); await send(); const b = await screen.findByTestId('context-banner'); expect(b.dataset.level).toBe('high');
     await userEvent.click(within(b).getByRole('button', { name: 'Compact' })); await waitFor(() => expect(turnsOf(fetch)).toHaveLength(2)); expect(turnsOf(fetch)[1]).toMatchObject({ message: '/compact', conversationId: 1 });
     await userEvent.click(within(await screen.findByTestId('context-banner')).getByRole('button', { name: 'Clear' })); await waitFor(() => expect(turnsOf(fetch)).toHaveLength(3)); expect(turnsOf(fetch)[2].message).toBe('/clear');
     await userEvent.click(within(await screen.findByTestId('context-banner')).getByRole('button', { name: 'New session' })); expect(sessions.get(7).convId).toBeNull(); expect(sessions.get(7).items).toEqual([]);

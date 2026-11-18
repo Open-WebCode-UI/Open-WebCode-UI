@@ -57,7 +57,8 @@ export function rollBackMessages(checkpointId) {
 
 // ---------- context size (an estimate: about 4 characters per token)
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
-export const WARN_AT = 0.6, HIGH_AT = 0.85;
+// Over half full the chat shows a pie; over 80% full it shows a warning to compact.
+export const WARN_AT = 0.5, HIGH_AT = 0.8;
 export function estimateTokens(messages, extraChars = 0) {
   let chars = extraChars;
   for (const m of messages) {
@@ -68,7 +69,7 @@ export function estimateTokens(messages, extraChars = 0) {
 }
 export function contextInfo(tokens, limit = DEFAULT_CONTEXT_WINDOW) {
   const pct = tokens / limit;
-  return { tokens, limit, pct: Math.round(pct * 100), level: pct >= HIGH_AT ? 'high' : pct >= WARN_AT ? 'warn' : 'ok' };
+  return { tokens, limit, pct: Math.round(pct * 100), level: pct > HIGH_AT ? 'high' : pct > WARN_AT ? 'warn' : 'ok' };
 }
 
 // ---------- rebuilding the conversation timeline the UI shows (what the browser builds live from the event stream)
