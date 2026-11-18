@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, IconButton, Tab, Tabs, Tooltip, Typography } from '@mui/material';
+import { Box, IconButton, Tab, Tabs, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 import Editor from '@monaco-editor/react';
+import { attachmentUrl } from '../../api.js';
+import { projectImageUrl } from './imageFiles.js';
+import { isCsvPath } from './csv.js';
+import CsvGrid from './CsvGrid.jsx';
 import CloseIcon from '@mui/icons-material/Close';
 import EditorMenuBar from './EditorMenuBar.jsx';
 import EditorStatusBar from './EditorStatusBar.jsx';
@@ -15,6 +19,18 @@ import { changedRegion, showLiveDiff, clearLiveDiff } from './liveDiff.js';
 const LANG = { js: 'javascript', jsx: 'javascript', mjs: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', md: 'markdown', py: 'python', html: 'html', css: 'css', yml: 'yaml', yaml: 'yaml', sh: 'shell', java: 'java', go: 'go', rs: 'rust', c: 'c', cpp: 'cpp', sql: 'sql', xml: 'xml', rb: 'ruby', php: 'php' };
 export const langOf = (p) => LANG[p.split('.').pop().toLowerCase()] || 'plaintext';
 const EMPTY = { hasEditor: false, line: 1, col: 1, selChars: 0, selLines: 0, cursors: 1, tabSize: 2, insertSpaces: true, eol: 'LF', lang: 'plaintext' };
+
+// An image open read only in its own tab (there is nothing to edit or save): an image the agent produced, or an image file in the project.
+function ImageTab({ project, tab }) {
+  const [failed, setFailed] = useState(false);
+  const src = tab.image.attachment ? attachmentUrl(tab.image.attachment) : projectImageUrl(project.id, tab.path);
+  return (
+    <Box sx={{ height: '100%', overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
+      {failed ? <Typography color="text.secondary">This image could not be shown.</Typography>
+        : <Box component="img" src={src} alt={tab.image.name} onError={() => setFailed(true)} sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />}
+    </Box>
+  );
+}
 
 // Editor area: menu bar, file tabs, the Monaco editor, and a status bar.
 export default function EditorPane({ project, tabs, active, canWrite, defaultTheme, onSelect, onClose, onCloseAll, onChange, onTabPatch, onSave, onSaveAll, onNewFile, onPreview, onQuickOpen, onSearch, goto, note, onNoteClose }) {
@@ -71,6 +87,10 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
   const previewText = tab?.preview ? (tabs.find((t) => t.path === tab.source)?.content ?? tab.content) : '';
   const isNb = (p) => isNotebookPath(p);
   const canPreview = !!tab && !tab.preview && (isMarkdownPath(tab.path) || isNb(tab.path));
+  // A CSV file can be edited as text (the default) or in a spreadsheet-style grid; the choice is kept on its tab.
+  const textTab = !!tab && !tab.preview && !tab.image;
+  const showToggle = textTab && isCsvPath(tab.path);
+  const gridOpen = showToggle && tab.view === 'grid';
   const previewLabel = tab && isNb(tab.preview ? tab.source : tab.path) ? 'Open notebook editor' : 'Open Markdown preview';
   // A notebook tab edits its source tab's JSON in place, so it is editable only while that tab is open.
   const nbSource = tab?.preview && isNb(tab.source) ? tabs.find((t) => t.path === tab.source) : undefined;
@@ -89,17 +109,24 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
       <Tabs value={active || false} variant="scrollable" scrollButtons="auto" sx={{ minHeight: 34, flexGrow: 1, minWidth: 0 }} onChange={(_, v) => onSelect(v)}>
         {tabs.map((t) => (
           <Tab key={t.path} value={t.path} sx={{ minHeight: 34, py: 0, textTransform: 'none' }} component="div"
-            label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: 34 }}>{t.preview && <PreviewIcon fontSize="inherit" titleAccess="Preview" />}<span style={{ display: 'flex', alignItems: 'center', height: '100%' }}>{t.preview ? `${isNb(t.source) ? 'Notebook' : 'Preview'} ${t.source.split('/').pop()}` : t.path.split('/').pop()}{t.content !== t.saved ? ' •' : ''}{t.streaming ? ' ✎ writing…' : ''}</span>
+            label={<Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, height: 34 }}>{t.preview && <PreviewIcon fontSize="inherit" titleAccess="Preview" />}<span style={{ display: 'flex', alignItems: 'center', height: '100%' }}>{t.preview ? `${isNb(t.source) ? 'Notebook' : 'Preview'} ${t.source.split('/').pop()}` : t.image ? t.image.name : t.path.split('/').pop()}{t.content !== t.saved ? ' •' : ''}{t.streaming ? ' ✎ writing…' : ''}</span>
               <IconButton size="small" aria-label={`Close ${t.path}`} onClick={(e) => { e.stopPropagation(); onClose(t.path); }}><CloseIcon fontSize="inherit" /></IconButton></Box>} />
         ))}
       </Tabs>
+      {showToggle && <ToggleButtonGroup size="small" exclusive value={gridOpen ? 'grid' : 'text'} aria-label="Editing view" sx={{ mx: 0.5, height: 26 }}
+        onChange={(_, v) => v && onTabPatch(tab.path, { view: v })}>
+        <ToggleButton value="text" sx={{ px: 1, py: 0, textTransform: 'none' }}>Text</ToggleButton>
+        <ToggleButton value="grid" sx={{ px: 1, py: 0, textTransform: 'none' }}>Grid</ToggleButton>
+      </ToggleButtonGroup>}
       {canPreview && <Tooltip title={previewLabel}><IconButton size="small" aria-label={previewLabel} sx={{ mx: 0.5 }} onClick={() => onPreview(tab.path)}><PreviewIcon fontSize="small" /></IconButton></Tooltip>}
       </Box>
       <Box sx={{ flexGrow: 1, minHeight: 0, position: 'relative' }}>
-        {tab?.preview && isNb(tab.source)
+        {tab?.image ? <ImageTab key={tab.path} project={project} tab={tab} /> :tab?.preview && isNb(tab.source)
           ? <NotebookEditor project={project} source={tab.source} content={previewText} editable={!!nbSource && canWrite && !nbSource.streaming} dirty={!!nbSource && nbSource.content !== nbSource.saved}
               onChange={(json) => onChange(tab.source, json)} onSave={() => onSave(tab.source)} onActions={setNbActions} />
-          : tab?.preview ? <MarkdownPreview source={tab.source} content={previewText} /> : tab ? (
+          : tab?.preview ? <MarkdownPreview source={tab.source} content={previewText} />
+          : gridOpen ? <CsvGrid key={tab.path} text={tab.content} readOnly={!canWrite || !!tab.streaming} onChange={(v) => onChange(tab.path, v)} />
+          : tab ? (
           <Editor path={`${project.id}/${tab.path}`} language={tab.lang || langOf(tab.path)} value={tab.content} theme={prefs.theme || defaultTheme}
             options={monacoOptions(prefs, !canWrite || !!tab.streaming)} onChange={(v) => onChange(tab.path, v ?? '')}
             onMount={(ed, monaco) => {
@@ -113,7 +140,7 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
             }} />
         ) : <Box sx={{ p: 4, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'text.secondary' }}><Typography sx={{ fontStyle: 'italic' }}>Open a file from the Explorer, or use the Agent panel to plan and build.</Typography></Box>}
       </Box>
-      <EditorStatusBar editorRef={editorRef} hasFile={!!tab && !tab.preview} status={tab && !tab.preview ? status : EMPTY} readOnly={!canWrite} dirty={dirty} langOverride={!!tab?.lang} onLanguage={(id) => tab && onTabPatch(tab.path, { lang: id || undefined })} />
+      <EditorStatusBar editorRef={editorRef} hasFile={textTab && !gridOpen} status={textTab && !gridOpen ? status : EMPTY} readOnly={!canWrite} dirty={dirty} langOverride={!!tab?.lang} onLanguage={(id) => tab && onTabPatch(tab.path, { lang: id || undefined })} />
     </Box>
   );
 }

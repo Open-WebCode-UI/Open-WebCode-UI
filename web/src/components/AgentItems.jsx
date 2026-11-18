@@ -91,7 +91,8 @@ function LiveBody({ t }) {
 }
 
 // Images, audio and video a tool or the model produced, shown from the stored attachment, each with a download link.
-export function MediaList({ items }) {
+// With onOpen, an image also gets an "Open in tab" button that opens it read-only in the editor.
+export function MediaList({ items, onOpen }) {
   return (
     <Stack spacing={1.5} sx={{ mt: 1 }} data-testid="media-list">
       {items.map((m) => (
@@ -101,6 +102,7 @@ export function MediaList({ items }) {
             : m.kind === 'video' ? <video controls src={attachmentUrl(m.id)} aria-label={m.name} style={{ maxWidth: '100%', maxHeight: 360 }} />
             : null}
           <Button size="small" component="a" href={`${attachmentUrl(m.id)}?download=1`} download={m.name} aria-label={`Download ${m.name}`} startIcon={<DownloadIcon fontSize="small" />} sx={{ mt: 0.5 }}>Download</Button>
+          {onOpen && m.kind === 'image' && <Button size="small" onClick={() => onOpen(m)} aria-label={`Open ${m.name} in a tab`} sx={{ mt: 0.5, ml: 1 }}>Open in tab</Button>}
         </Box>
       ))}
     </Stack>

@@ -103,6 +103,24 @@ describe('download', () => {
   });
 });
 
+describe('images in the editor', () => {
+  it('serves a raster image inline, sandboxed, with its real type', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2]); await file('img/logo.PNG', png.toString('latin1'));
+    fs.writeFileSync(path.join(await dirOf(), 'img/logo.PNG'), png); // the bytes must survive untouched (a text write would not)
+    const r = await u.get(`/api/projects/${p.id}/image?path=img/logo.PNG`).buffer(true).parse(bin);
+    expect(r.status).toBe(200); expect(r.headers['content-type']).toBe('image/png'); expect(r.headers['content-security-policy']).toBe('sandbox');
+    expect(r.headers['x-content-type-options']).toBe('nosniff'); expect(r.body).toEqual(png);
+  });
+  it('refuses svg and other files, folders, traversal, and missing files', async () => {
+    await file('icon.svg', '<svg onload="alert(1)"/>'); await file('a.txt', 'A'); fs.mkdirSync(path.join(await dirOf(), 'pics.png'));
+    expect((await u.get(`/api/projects/${p.id}/image?path=icon.svg`)).status).toBe(415);
+    expect((await u.get(`/api/projects/${p.id}/image?path=a.txt`)).status).toBe(415);
+    expect((await u.get(`/api/projects/${p.id}/image?path=pics.png`)).status).toBe(400);
+    expect((await u.get(`/api/projects/${p.id}/image?path=../x.png`)).status).toBe(400);
+    expect((await u.get(`/api/projects/${p.id}/image?path=nope.png`)).status).toBe(404);
+  });
+});
+
 describe('search', () => {
   const find = (q) => u.get(`/api/projects/${p.id}/search?${q}`);
   it('finds literal matches with line and column, skipping node_modules and binary files', async () => {

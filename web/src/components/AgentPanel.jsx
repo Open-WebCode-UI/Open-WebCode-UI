@@ -38,7 +38,7 @@ const modeSx = (color) => ({ '&.Mui-selected, &.Mui-selected:hover': { bgcolor: 
 // Plan mode is read-only (enforced on the server).
 import { useExerciseRules } from '../exerciseRules.js';
 
-export default function AgentPanel({ project, onFileChanged, onCheckpoint, onCommand, onOpenCheckpoint }) {
+export default function AgentPanel({ project, onFileChanged, onCheckpoint, onCommand, onOpenCheckpoint, onOpenImage }) {
   const { can, config } = useAuth();
   const pid = project?.id;
   const rules = useExerciseRules(project?.id); // a course exercise's rules, if this workspace belongs to one
@@ -96,7 +96,7 @@ export default function AgentPanel({ project, onFileChanged, onCheckpoint, onCom
   const render = (it, i) => {
     switch (it.kind) {
       case 'user': return <Paper key={it.id} variant="outlined" sx={{ p: 1.5, bgcolor: 'action.hover' }}><Stack direction="row" alignItems="center"><Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>You</Typography><CopyButton text={it.text} label="Copy prompt" /></Stack><Typography sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }} variant="body2">{it.text}</Typography><SentAttachments items={it.attachments} /></Paper>;
-      case 'media': return <Paper key={it.id} variant="outlined" sx={{ p: 1.5 }}><MediaList items={it.attachments} /></Paper>;
+      case 'media': return <Paper key={it.id} variant="outlined" sx={{ p: 1.5 }}><MediaList items={it.attachments} onOpen={onOpenImage} /></Paper>;
       case 'assistant': if (!it.thinking?.trim() && !it.text) return null; return (
         <Paper key={it.id} variant="outlined" sx={{ p: 1.5 }}>
           <Stack direction="row" alignItems="center"><Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>Agent</Typography><CopyButton text={it.text} label="Copy response" /></Stack>

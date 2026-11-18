@@ -150,6 +150,18 @@ export function projectsRouter() {
     if (buf.includes(0)) fail(415, 'binary_file');
     res.json({ path: relFrom(p.dir, abs), content: buf.toString('utf8') });
   });
+  // A raster image in the project, shown read only in the editor. SVG is left out: it is markup that can run script.
+  const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.ico': 'image/x-icon' };
+  route.get('/projects/:id/image', 'files.read', async (req, res) => {
+    const p = await getProject(req), abs = jail(p, String(req.query.path || ''));
+    const type = IMAGE_TYPES[path.extname(abs).toLowerCase()];
+    if (!type) fail(415, 'not_an_image');
+    let st; try { st = fs.statSync(abs); } catch { fail(404, 'not_found'); }
+    if (!st.isFile()) fail(400, 'not_a_file');
+    if (st.size > 20_000_000) fail(413, 'too_large');
+    res.set({ 'Content-Type': type, 'Content-Length': st.size, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox', 'Cache-Control': 'no-cache' });
+    fs.createReadStream(abs).on('error', () => res.destroy()).pipe(res);
+  });
   // Find in files. Globs in include / exclude are comma separated and match a file name or a path suffix (see globToRegex).
   route.get('/projects/:id/search', 'files.read', async (req, res) => {
     const p = await getProject(req), q = validate(z.object({

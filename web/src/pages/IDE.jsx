@@ -19,6 +19,7 @@ import AgentPanel from '../components/AgentPanel.jsx';
 import CheckpointsPanel from '../components/CheckpointsPanel.jsx';
 import EditorPane from '../components/ide/EditorPane.jsx';
 import { PREVIEW_PREFIX, previewPath, sourceOf } from '../components/ide/markdownPreview.js';
+import { isImagePath } from '../components/ide/imageFiles.js';
 import { isNotebookPath } from '../components/ide/notebook.js';
 import IdeLayout from '../components/ide/IdeLayout.jsx';
 import TerminalPanel from '../components/ide/TerminalPanel.jsx';
@@ -32,6 +33,7 @@ import StatusPane from '../components/ide/StatusPane.jsx';
 import ContactPane from '../components/ide/ContactPane.jsx';
 
 import { useSearchParams } from 'react-router-dom';
+const IMAGE_PREFIX = 'attachment:'; // namespaces an image tab's path so it never collides with a project file
 
 const lastProjectId = () => { try { return localStorage.getItem('ideProject'); } catch { return null; } };
 const rememberProject = (id) => { try { localStorage.setItem('ideProject', String(id)); } catch { /* storage may be unavailable */ } };
@@ -65,7 +67,8 @@ export default function IDE() {
 
   const open = async (path) => {
     if (!tabsRef.current.find((t) => t.path === path)) {
-      try { const f = await get(`/api/projects/${project.id}/file?path=${encodeURIComponent(path)}`); setTabs((t) => [...t, { path, content: f.content, saved: f.content }]); }
+      if (isImagePath(path)) setTabs((t) => [...t, { path, image: { name: path.split('/').pop() }, content: '', saved: '' }]); // shown read only, loaded by the editor
+      else try { const f = await get(`/api/projects/${project.id}/file?path=${encodeURIComponent(path)}`); setTabs((t) => [...t, { path, content: f.content, saved: f.content }]); }
       catch (e) { setNote(e.body?.error === 'binary_file' ? 'Binary files cannot be edited here.' : 'Could not open file'); return; }
     }
     setActive(path); setRecent((r) => [path, ...r.filter((p) => p !== path)].slice(0, 20));
@@ -88,11 +91,17 @@ export default function IDE() {
     }
     setActive(pp);
   };
+  // An image the agent produced opens read only in its own tab (or switches to it if already open). Its path is namespaced like a preview's.
+  const openImage = (m) => {
+    const path = `${IMAGE_PREFIX}${m.id}`;
+    if (!tabsRef.current.some((t) => t.path === path)) setTabs((ts) => [...ts, { path, image: { attachment: m.id, name: m.name }, content: '', saved: '' }]);
+    setActive(path);
+  };
   const openMatch = async (path, h) => { await open(path); setGoto({ path, line: h.line, col: h.col, length: h.length, n: Date.now() }); };
   // Search view of the Explorer: shows the Explorer pane if it was hidden, and puts the cursor in the search box.
   const showSearch = () => { setLayout((l) => (visiblePanes(l).includes('explorer') ? l : showPane(l, 'explorer'))); setView('search'); setSearchTick((t) => t + 1); };
   const save = async (path = active) => {
-    const t = tabsRef.current.find((x) => x.path === path); if (!t) return false;
+    const t = tabsRef.current.find((x) => x.path === path); if (!t || t.image) return false; // an image tab has nothing to save
     try { await put(`/api/projects/${project.id}/file`, { path, content: t.content }); setTabs((ts) => ts.map((x) => (x.path === path ? { ...x, saved: t.content } : x))); loadTree(); return true; }
     catch (e) { setNote(e.body?.error === 'agent_running' ? 'The agent is running; try again when it finishes.' : 'Save failed'); return false; }
   };
@@ -101,7 +110,8 @@ export default function IDE() {
   const refreshFromDisk = useCallback(async () => {
     loadTree();
     for (const t of tabsRef.current) {
-      if (t.preview ? tabsRef.current.some((x) => x.path === t.source) : t.content !== t.saved || t.streaming) continue; // a preview follows its open source tab
+      if (t.image) continue; // an image tab is not a file on disk
+      if (t.preview ?tabsRef.current.some((x) => x.path === t.source) : t.content !== t.saved || t.streaming) continue; // a preview follows its open source tab
       const f = await get(`/api/projects/${project.id}/file?path=${encodeURIComponent(sourceOf(t))}`).catch(() => null);
       if (t.preview) { setTabs((ts) => ts.flatMap((x) => (x.path !== t.path ? [x] : f ? [{ ...x, content: f.content, saved: f.content }] : []))); continue; }
       setTabs((ts) => ts.flatMap((x) => (x.path !== t.path ? [x] : f ? [{ ...x, content: f.content, saved: f.content }] : [])));
@@ -301,7 +311,7 @@ export default function IDE() {
         {can('checkpoint.read') && <Tab data-tour="agent-checkpoints" value="checkpoints" label="Checkpoints" sx={{ minHeight: 34 }} />}
       </Tabs>
       <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-        <Box sx={{ height: '100%', display: side === 'agent' ? 'block' : 'none' }}><AgentPanel project={project} onFileChanged={refreshFromDisk} onCheckpoint={() => setCpKey((k) => k + 1)} onCommand={onCommand} onOpenCheckpoint={(id) => { if (can('checkpoint.read')) { setCpFocus({ id, n: Date.now() }); setSide('checkpoints'); } }} /></Box>
+        <Box sx={{ height: '100%', display: side === 'agent' ? 'block' : 'none' }}><AgentPanel project={project} onFileChanged={refreshFromDisk} onOpenImage={openImage} onCheckpoint={() => setCpKey((k) => k + 1)} onCommand={onCommand} onOpenCheckpoint={(id) => { if (can('checkpoint.read')) { setCpFocus({ id, n: Date.now() }); setSide('checkpoints'); } }} /></Box>
         {side === 'checkpoints' && <CheckpointsPanel project={project} refreshKey={cpKey} focus={cpFocus} monacoTheme={monacoTheme} onRestored={() => { refreshFromDisk(); sessions.reload(project.id); }} />}
       </Box>
     </Box>
