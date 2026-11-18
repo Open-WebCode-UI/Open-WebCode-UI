@@ -10,6 +10,7 @@ import NotebookEditor from './NotebookEditor.jsx';
 import { isMarkdownPath } from './markdownPreview.js';
 import { isNotebookPath } from './notebook.js';
 import { loadPrefs, savePrefs, monacoOptions } from './editorPrefs.js';
+import { changedRegion, showLiveDiff, clearLiveDiff } from './liveDiff.js';
 
 const LANG = { js: 'javascript', jsx: 'javascript', mjs: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', md: 'markdown', py: 'python', html: 'html', css: 'css', yml: 'yaml', yaml: 'yaml', sh: 'shell', java: 'java', go: 'go', rs: 'rust', c: 'c', cpp: 'cpp', sql: 'sql', xml: 'xml', rb: 'ruby', php: 'php' };
 export const langOf = (p) => LANG[p.split('.').pop().toLowerCase()] || 'plaintext';
@@ -36,12 +37,24 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
   editorRef.current.refresh = refresh;
   useEffect(() => { if (!tab) setStatus(EMPTY); else refresh(); }, [active, tab?.lang]); // eslint-disable-line
 
-  // Follow the agent as it writes a file: keep the newest lines in view.
+  // Follow the agent as it changes a file: scroll to the lines that changed and paint them (green added, red removed) for a moment.
+  // The change is found by diffing what the editor showed before against the new text; for a file the agent has just opened,
+  // the text before the first edit is the tab's `baseline`.
+  const live = useRef({}); // { seen: { path, content } of the last render, deco, zone, timer } for the live diff
   useEffect(() => {
-    if (!tab?.streaming) return;
-    const ed = editorRef.current.editor, n = ed?.getModel?.()?.getLineCount?.();
-    if (n) ed.revealLine(tab.revealLine || n); // a line edit scrolls to where it lands, a streamed file to its end
-  }, [tab?.content, tab?.streaming]); // eslint-disable-line
+    const L = live.current, ed = editorRef.current.editor, monaco = editorRef.current.monaco;
+    const prev = L.seen;
+    L.seen = tab && !tab.preview ? { path: tab.path, content: tab.content } : null;
+    if (prev?.path !== L.seen?.path) clearLiveDiff(ed, L);
+    if (!tab?.streaming || !L.seen) return;
+    const before = prev && prev.path === L.seen.path ? prev.content : tab.baseline;
+    if (before === undefined || before === null) return;
+    const region = changedRegion(before, tab.content ?? '');
+    if (!region || !ed?.getModel?.()) return;
+    ed.revealLineInCenterIfOutsideViewport?.(Math.min(region.start + 1, ed.getModel().getLineCount()));
+    showLiveDiff(ed, monaco, region, L);
+  }, [tab?.path, tab?.content, tab?.streaming]); // eslint-disable-line
+  useEffect(() => () => clearLiveDiff(editorRef.current.editor, live.current), []);
   // A search result (or another "go to") asks for a position in a file: select the match and bring it to the middle of the view.
   const gotoDone = useRef();
   const applyGoto = () => {

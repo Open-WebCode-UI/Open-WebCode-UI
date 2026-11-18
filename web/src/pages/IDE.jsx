@@ -116,12 +116,13 @@ export default function IDE() {
     live.current.clear(); setPending([]);
     if (!project) return undefined;
     const sync = () => setPending([...live.current.values()].filter((s) => s.name === 'write_file').map((s) => s.path));
-    const show = (s, content, revealLine) => {
+    // baseline: the file's text before an edit, so a tab opened by that edit can highlight what changed (see EditorPane).
+    const show = (s, content, baseline) => {
       setTabs((ts) => {
         const t = ts.find((x) => x.path === s.path);
-        if (!t) return [...ts, { path: s.path, content, saved: content, streaming: true, revealLine }];
+        if (!t) return [...ts, { path: s.path, content, saved: content, streaming: true, baseline }];
         if (t.content !== t.saved && !t.streaming) return ts; // the user has unsaved edits here: leave them alone
-        return ts.map((x) => (x.path === s.path ? { ...x, content, saved: content, streaming: true, revealLine } : x));
+        return ts.map((x) => (x.path === s.path ? { ...x, content, saved: content, streaming: true } : x));
       });
       if (!s.focused) { s.focused = true; setActive(s.path); }
     };
@@ -132,11 +133,11 @@ export default function IDE() {
         const key = op === 'insert' ? 'after_line' : 'start_line';
         if (s.base === undefined || !closed.includes(key) || (op !== 'delete' && !st.content)) return;
         const r = applyLineEdit(s.base, op, { start_line: st.start_line, after_line: st.after_line, end_line: closed.includes('end_line') ? st.end_line : undefined, content: st.content });
-        if (!r.error) show(s, r.next, r.from + Math.max(r.added - 1, 0));
+        if (!r.error) show(s, r.next, s.base);
         return;
       }
       if (s.base === undefined || !closed.includes('old_string') || !st.new_string || !s.base.includes(st.old_string)) return;
-      show(s, s.base.replace(st.old_string, () => st.new_string));
+      show(s, s.base.replace(st.old_string, () => st.new_string), s.base);
     };
     const onStream = (e) => {
       if (e.project !== project.id || !e.closed?.includes('path') || !e.stream.path) return;
@@ -156,7 +157,7 @@ export default function IDE() {
       if (e.project !== project.id) return;
       const s = live.current.get(e.id); if (!s) return;
       live.current.delete(e.id); sync();
-      setTabs((ts) => ts.map((x) => (x.path === s.path && x.streaming ? { ...x, streaming: false } : x)));
+      setTabs((ts) => ts.map((x) => (x.path === s.path && x.streaming ? { ...x, streaming: false, baseline: undefined } : x)));
     };
     const offs = [sessions.on('file_stream', onStream), sessions.on('file_stream_end', onEnd)];
     return () => offs.forEach((f) => f());
