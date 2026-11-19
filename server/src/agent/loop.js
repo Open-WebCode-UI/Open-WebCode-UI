@@ -2,7 +2,7 @@ import { estimateTokens } from '../sessions.js';
 import { prefill } from './prefill.js';
 import { createToolStreamer } from './tool-stream.js';
 import { getToolsFor, executeTool, PlanModeViolation, TERMINAL_TOOLS } from './tools.js';
-import { MAX_PROTOCOL_RETRIES, findPseudoCall, validateArgs, invalidArgsMessage, pseudoCallNotice } from './tool-protocol.js';
+import { MAX_PROTOCOL_RETRIES, findPseudoCall, validateArgs, invalidArgsMessage, pseudoCallNotice, writeIntentIn, thinkingActionNotice } from './tool-protocol.js';
 
 // Keep tool_start events small: file bodies are not streamed to the browser, edits carry short before/after excerpts for display.
 const clip = (v, n = 1500) => (typeof v === 'string' && v.length > n ? `${v.slice(0, n)}…` : v);
@@ -14,6 +14,14 @@ function displayArgs(name, a = {}) {
 }
 
 export const INTERRUPTED_NOTE = '[Interrupted by the user before replying.]';
+
+// How many times an empty Act-mode reply is nudged before the turn is stopped.
+export const MAX_IDLE_NUDGES = 2;
+// The platform's message to a model that replied with reasoning only. Says what happened to the files, and what to do next.
+export const idleNotice = (stop) => {
+  const cut = ['length', 'max_tokens', 'MAX_TOKENS'].includes(stop);
+  return `[Platform notice] Your last reply had no text and no tool call, so nothing was done and no file changed. Thinking about a change is not making it. ${cut ? 'The reply also hit the output limit: write smaller pieces (for example create the file with a short first part, then add to it with insert_lines or edit_file). ' : ''}Make the next change now by calling the tool itself through the tool-calling interface (write_file, edit_file, or another tool). If all the work is finished and checked, call conclude instead.`;
+};
 
 // Runs one agent turn: model -> tool calls -> results -> model ... until a final answer or the iteration cap.
 // `messages` is mutated (neutral format, see llm/provider.js). `emit(event)` streams to the client.
@@ -27,13 +35,17 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
     emit({ type: 'aborted' });
     return { stopped: 'aborted' };
   };
-  let protocolRetries = 0, forceTool = null;
+  let protocolRetries = 0, forceTool = null, idleNudges = 0;
   for (let i = 0; i < maxIterations; i++) {
     if (signal?.aborted) return interrupt();
     const system = baseSystem + (ctx.coord?.note() || ''); // other running sessions can change between steps
     let text = '', thought = '';
     const calls = [], thinkingBlocks = [], drawn = [];                 // drawn: files the model generated in this reply (refs; bytes are in attachment storage)
-    let reported = null;
+    let reported = null, stopReason = null;
+    // Reasoning that describes a file change before any call is made: the stream is cut and the model is asked to make the call.
+    let actionCut = null, checkedAt = 0;
+    const cut = new AbortController();
+    const streamSignal = signal ? AbortSignal.any([signal, cut.signal]) : cut.signal;
     const sentTokens = estimateTokens(messages, system.length);
     // Until the first token arrives the model is reading the prompt, which can take minutes on a local server and every step re-reads it.
     emit({ type: 'phase', phase: 'prefill', tokens: sentTokens, etaMs: prefill.eta(model, sentTokens) });
@@ -41,14 +53,26 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
     let generating = false;
     const live = createToolStreamer(emit);
     try {
-      for await (const ev of adapter.stream({ system, messages: prepare ? prepare(messages) : messages, tools, model, maxTokens, temperature, thinking, signal, ...(forceTool ? { toolChoice: { name: forceTool } } : {}) })) {
+      for await (const ev of adapter.stream({ system, messages: prepare ? prepare(messages) : messages, tools, model, maxTokens, temperature, thinking, signal: streamSignal, ...(forceTool ? { toolChoice: { name: forceTool } } : {}) })) {
         if (!generating) {
           generating = true;
           if (ev.type === 'text' || ev.type === 'thinking') prefill.record(model, sentTokens, Date.now() - started); // a tool call only arrives after generation, so it says nothing about prefill
           emit({ type: 'phase', phase: 'generating' });
         }
         if (ev.type === 'text') { text += ev.text; emit({ type: 'text', text: ev.text }); }
-        else if (ev.type === 'thinking') { thought += ev.text; emit({ type: 'thinking', text: ev.text }); }
+        else if (ev.type === 'thinking') {
+          thought += ev.text; emit({ type: 'thinking', text: ev.text });
+          if (!calls.length && !actionCut && idleNudges < MAX_IDLE_NUDGES && thought.length - checkedAt >= 24) {
+            checkedAt = thought.length;
+            const hit = writeIntentIn(thought, tools);
+            if (hit) {
+              actionCut = hit;
+              emit({ type: 'notice', text: 'The agent described a file change in its reasoning without making the tool call. It was stopped and asked to make the change now.' });
+              cut.abort();
+              break;
+            }
+          }
+        }
         else if (ev.type === 'media') {
           // Stored for the conversation and shown in the UI; the model is not sent its own images back.
           const a = await ctx.attachments?.saveOutput?.(ev, `generated-${drawn.length + 1}`);
@@ -58,10 +82,11 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
         else if (ev.type === 'tool_delta') live.delta(ev); // file contents and commands appear in the UI while the model is still writing them
         else if (ev.type === 'tool_call') calls.push(ev);
         else if (ev.type === 'usage') reported = { inputTokens: ev.inputTokens, outputTokens: ev.outputTokens };
+        else if (ev.type === 'done') stopReason ??= ev.stop ?? null;
       }
     } catch (e) {
       if (signal?.aborted) return interrupt(text, thought);
-      throw e;
+      if (!actionCut) throw e; // a stream we cut ourselves is expected to end with an abort error
     } finally { live.close(); }
     // Providers that report no usage (some local servers) are costed from an estimate, flagged as such.
     await onUsage?.(reported ?? { inputTokens: sentTokens, outputTokens: Math.ceil((text.length + thought.length + calls.reduce((n, c) => n + JSON.stringify(c.args ?? {}).length, 0)) / 4), estimated: true });
@@ -69,6 +94,13 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
       ...(calls.length ? { toolCalls: calls.map(({ id, name, args }) => ({ id, name, args })) } : {}) });
     // Some models write a call such as `conclude { ... }` or `propose_plan(...)` as prose instead of making it, so nothing runs.
     // Ask for a real call (the last retry forces that tool where the provider allows it), and fail loudly rather than treat the prose as an answer.
+    if (actionCut) {
+      idleNudges++;
+      audit?.('agent.thinking_action', actionCut.kind, { attempt: idleNudges, tool: actionCut.tool ?? null });
+      messages.at(-1).content = text || '[No reply: this step was cut short because its reasoning described a file change.]';
+      messages.push({ role: 'user', content: thinkingActionNotice(actionCut) });
+      continue;
+    }
     const pseudo = !calls.length && findPseudoCall(text, tools);
     forceTool = null;
     if (pseudo) {
@@ -81,6 +113,20 @@ export async function runAgentTurn({ adapter, model, system: baseSystem, message
       if (protocolRetries === MAX_PROTOCOL_RETRIES) forceTool = pseudo;
       messages.push({ role: 'user', content: pseudoCallNotice(pseudo) });
       continue;
+    }
+    // Act mode with an empty reply (only reasoning, no text, no tool call): the model has planned in its head and nothing happened.
+    // Ending the turn there leaves the files unchanged, so give it a short nudge to act, a limited number of times.
+    if (!calls.length && ctx.agentMode === 'act' && !text.trim() && !signal?.aborted) {
+      if (idleNudges < MAX_IDLE_NUDGES) {
+        idleNudges++;
+        audit?.('agent.idle_reply', ctx.agentMode, { attempt: idleNudges, stop: stopReason });
+        // Some providers reject an empty assistant message, so the stored reply gets a placeholder (its reasoning stays on the message).
+        messages[messages.length - 1].content = '[No reply: this step had only reasoning and no tool call.]';
+        messages.push({ role: 'user', content: idleNotice(stopReason) });
+        continue;
+      }
+      emit({ type: 'error', message: 'The model kept replying without making a tool call, so the turn was stopped. Nothing further was changed.' });
+      return { stopped: 'idle_reply', text };
     }
     if (!calls.length) { emit({ type: 'done' }); return { stopped: 'complete', text }; }
     let ended = false;

@@ -36,3 +36,25 @@ export function validateArgs(tool, args) {
 export const invalidArgsMessage = (name, problems) => `Error: the arguments of ${name} were invalid, so it was not run: ${problems.join('; ')}. Call ${name} again with valid arguments.`;
 
 export const pseudoCallNotice = (name) => `[Platform notice] You wrote ${name}(...) as plain text, so the call was not made and nothing happened. Do not write tool calls out as text. Invoke the ${name} tool itself through the tool-calling interface, as your only tool call, with its arguments filled in.`;
+
+// Reasoning that describes a file change as already decided ("I'll write gan.ipynb in one write_file call") while no tool call has been made.
+// Returns { kind: 'call', tool } when the reasoning contains call syntax for a tool, or { kind: 'intent', tool, text } when a finished sentence
+// pairs a write verb and an intent phrase with a tool name or a file name. The last, possibly unfinished, piece is not checked.
+const WRITE_TOOL_RE = /\b(write_file|edit_file|replace_lines|insert_lines|delete_lines|save_attachment|delete_file)\b/;
+const FILE_RE = /(?:^|[\s`'"(])[\w./-]+\.(?:py|js|jsx|ts|tsx|mjs|ipynb|txt|md|json|ya?ml|html|css|scss|csv|toml|ini|sh|go|rs|java|kt|c|cc|cpp|h|sql|xml|vue|svelte)\b/i;
+const WRITE_VERB_RE = /\b(write|writing|create|creating|save|saving|produce|producing|edit|editing|implement|implementing|rewrite|add|adding)\b/i;
+const INTENT_RE = /\b(i'?ll|i will|i'm going to|i am going to|let me|going to|now i|next i|i'm writing|i'm creating|one\b[^.]{0,40}\bcall)\b/i;
+export function writeIntentIn(thought, tools) {
+  if (!thought) return null;
+  const call = findPseudoCall(thought, tools);
+  if (call) return { kind: 'call', tool: call };
+  const pieces = thought.split(/(?<=[.!?])\s+|\n+/);
+  pieces.pop(); // the last piece may still be arriving
+  for (const s of pieces) {
+    const tool = WRITE_TOOL_RE.exec(s)?.[1] ?? null;
+    if ((tool || FILE_RE.test(s)) && WRITE_VERB_RE.test(s) && INTENT_RE.test(s)) return { kind: 'intent', tool, text: s.trim().slice(0, 160) };
+  }
+  return null;
+}
+
+export const thinkingActionNotice = (hit) => `[Platform notice] Your reasoning ${hit.kind === 'call' ? `wrote a ${hit.tool} call as text` : `described a file change (“${hit.text}”)`}, but no tool call was made, so nothing was written. Thinking is not writing. Stop planning and call the tool now through the tool-calling interface, with all of its arguments filled in.`;

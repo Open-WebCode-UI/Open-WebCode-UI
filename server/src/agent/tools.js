@@ -129,6 +129,21 @@ export function applyLineEdit(txt, op, a) {
   return { next: out.join(eol) + (out.length && (trailing || total === 0) ? eol : ''), from: from + 1, removed: op === 'insert' ? 0 : to - from, added: fresh.length, total: out.length };
 }
 
+// Required string arguments of a file tool. An empty string is allowed (an empty file, or deleting text with new_string ""), but a missing
+// or non-string value is an error. The message names the keys the model actually sent, so a renamed argument is easy to spot and fix.
+// Returns an error string, or null when the arguments are usable.
+export function argProblem(tool, args, keys) {
+  const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  const bad = keys.filter((k) => typeof a[k] !== 'string');
+  if (!bad.length) return null;
+  const got = Object.keys(a).filter((k) => !k.startsWith('_')).join(', ') || 'none';
+  const first = bad[0];
+  const hint = first === 'content' && a.content !== undefined && typeof a.content !== 'string'
+    ? '"content" must be the file text as a single string (not an object or array; for JSON, serialize it first)'
+    : `"${first}" is missing or not a string`;
+  return `Error: ${tool} was not run: ${hint}. Arguments received: ${got}. Call ${tool} again with ${keys.map((k) => `"${k}"`).join(', ')} as strings.`;
+}
+
 // Steering hints appended to tool results.
 const REWRITE_NOTE = 'Note: this file already existed and was overwritten in full. For further changes to an existing file, prefer replace_lines, delete_lines, insert_lines, or edit_file over rewriting it; read_file first to confirm the line numbers.';
 const LINE_FALLBACK_NOTE = 'The file was not changed. Call read_file to check the current line numbers and retry. If the line edit keeps failing, rewrite the whole file with write_file instead, with the edit applied.';
@@ -351,6 +366,9 @@ async function runTool(name, args, ctx, meta) {
       }
       case 'propose_plan': ctx.onPlan?.(args.plan); return 'Plan presented to the user. Stop and wait for their approval.';
       case 'write_file': {
+        // Checked before anything touches the disk: a missing or misnamed "content" must not become an empty file that reports success.
+        const badWrite = argProblem('write_file', args, ['path', 'content']);
+        if (badWrite) return badWrite;
         const abs = pw(args.path); blocked(abs);
         const rel = relFrom(ctx.root, abs), busy = guard(rel, abs); if (busy) return busy;
         const existed = fs.existsSync(abs) && fs.statSync(abs).isFile();
@@ -373,6 +391,8 @@ async function runTool(name, args, ctx, meta) {
         return `Saved ${f.name} to ${rel} (${f.data.length} bytes)`;
       }
       case 'edit_file': {
+        const badEdit = argProblem('edit_file', args, ['path', 'old_string', 'new_string']);
+        if (badEdit) return badEdit;
         const abs = pw(args.path); blocked(abs);
         const busy = guard(relFrom(ctx.root, abs), abs); if (busy) return busy;
         const txt = fs.readFileSync(abs, 'utf8');

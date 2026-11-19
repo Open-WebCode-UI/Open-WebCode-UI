@@ -11,7 +11,7 @@ const within = (root, p) => { const r = path.relative(root, p); return r === '' 
 export function resolveInJail(root, rel) {
   if (typeof rel !== 'string') throw new JailError('Path must be a string');
   if (rel.includes('\0')) throw new JailError('Invalid path');
-  if (path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) throw new JailError('Absolute paths are not allowed');
+  if (path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) throw new JailError(`Absolute paths are not allowed: "${rel}" must be relative to the project root (for example "src/app.js", not "/src/app.js")`);
   const realRoot = fs.realpathSync(root);
   const target = path.resolve(realRoot, rel);
   if (!within(realRoot, target)) throw new JailError('Path escapes the project');
