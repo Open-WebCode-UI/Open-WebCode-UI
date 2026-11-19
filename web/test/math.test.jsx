@@ -12,7 +12,12 @@ it('renders a mermaid block as a diagram, falling back to code when it fails', a
   const { vi } = await import('vitest');
   const { waitFor } = await import('@testing-library/react');
   vi.resetModules();
-  vi.doMock('mermaid', () => ({ default: { initialize: () => {}, render: async (_id, src) => { if (src.includes('bad')) throw new Error('parse'); return { svg: '<svg data-x="1"></svg>' }; } } }));
+  const valid = (src) => !src.includes('bad') && !src.includes('partial');
+  vi.doMock('mermaid', () => ({ default: {
+    initialize: () => {},
+    parse: async (src) => valid(src),
+    render: async (_id, src) => { if (!valid(src)) throw new Error('parse'); return { svg: '<svg data-x="1"></svg>' }; },
+  } }));
   const { default: Md } = await import('../src/components/Markdown.jsx');
   const ok = render(<Md>{'```mermaid\ngraph TD; A-->B\n```'}</Md>);
   await waitFor(() => expect(ok.container.querySelector('[data-testid=mermaid-diagram] svg')).not.toBeNull());
@@ -20,4 +25,21 @@ it('renders a mermaid block as a diagram, falling back to code when it fails', a
   await new Promise((r) => setTimeout(r, 50));
   expect(bad.container.querySelector('[data-testid=code-block]')).not.toBeNull();
   expect(bad.container.querySelector('[data-testid=mermaid-diagram]')).toBeNull();
+});
+
+it('keeps the last good mermaid diagram while a streamed partial block is invalid', async () => {
+  const { vi } = await import('vitest');
+  const { waitFor } = await import('@testing-library/react');
+  vi.resetModules();
+  vi.doMock('mermaid', () => ({ default: {
+    initialize: () => {},
+    parse: async (src) => !src.includes('partial'),
+    render: async () => ({ svg: '<svg data-x="1"></svg>' }),
+  } }));
+  const { default: Md } = await import('../src/components/Markdown.jsx');
+  const r = render(<Md>{'```mermaid\ngraph TD; A-->B\n```'}</Md>);
+  await waitFor(() => expect(r.container.querySelector('[data-testid=mermaid-diagram] svg')).not.toBeNull());
+  r.rerender(<Md>{'```mermaid\ngraph TD; A-->partial\n```'}</Md>);
+  await new Promise((res) => setTimeout(res, 400));
+  expect(r.container.querySelector('[data-testid=mermaid-diagram] svg')).not.toBeNull();
 });

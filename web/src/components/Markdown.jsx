@@ -20,21 +20,32 @@ const textOf = (n) => (n == null || typeof n === 'boolean' ? '' : typeof n === '
 
 // Mermaid diagrams: the library is loaded on first use. Source that does not parse (including a half-streamed block) stays a plain code block,
 // and `securityLevel: 'strict'` makes mermaid sanitise the labels and disable click handlers in the SVG it produces.
+// While a diagram streams in, each partial source is checked with `mermaid.parse(…, { suppressErrors: true })` first: that path never touches
+// the DOM, so a half-written diagram can't leave mermaid's error banner on the page. Invalid partial source keeps the last good diagram (or the
+// code block if there is none), and rendering is debounced so a fast stream doesn't re-render on every token.
+const MERMAID_DEBOUNCE_MS = 300;
 let mermaidSeq = 0;
 function Mermaid({ source, fallback }) {
   const dark = useTheme().palette.mode === 'dark';
   const [svg, setSvg] = useState(null);
   useEffect(() => {
     let live = true;
-    (async () => {
+    const timer = setTimeout(async () => {
+      let id = null;
       try {
         const { default: mermaid } = await import('mermaid');
         mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
-        const out = await mermaid.render(`mermaid-${++mermaidSeq}`, source);
+        if (!(await mermaid.parse(source, { suppressErrors: true }))) return;
+        id = `mermaid-${++mermaidSeq}`;
+        const out = await mermaid.render(id, source);
         if (live) setSvg(out.svg);
-      } catch { if (live) setSvg(null); document.getElementById(`dmermaid-${mermaidSeq}`)?.remove(); }
-    })();
-    return () => { live = false; };
+      } catch { /* render failed: keep whatever is showing */ }
+      finally {
+        // mermaid can leave its scratch nodes in <body> even on failure; remove them by the exact ids it used.
+        if (id) { document.getElementById(`d${id}`)?.remove(); document.getElementById(id)?.remove(); }
+      }
+    }, MERMAID_DEBOUNCE_MS);
+    return () => { live = false; clearTimeout(timer); };
   }, [source, dark]);
   if (!svg) return fallback;
   return <Box data-testid="mermaid-diagram" role="img" aria-label="Diagram" sx={{ my: 1.5, overflowX: 'auto', textAlign: 'center', '& svg': { maxWidth: '100%', height: 'auto' } }} dangerouslySetInnerHTML={{ __html: svg }} />;
