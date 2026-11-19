@@ -4,6 +4,7 @@ import Editor from '@monaco-editor/react';
 import { attachmentUrl } from '../../api.js';
 import { projectImageUrl } from './imageFiles.js';
 import { isCsvPath } from './csv.js';
+import { MONACO_EXTENSIONS } from './langExtensions.js';
 import CsvGrid from './CsvGrid.jsx';
 import CloseIcon from '@mui/icons-material/Close';
 import EditorMenuBar from './EditorMenuBar.jsx';
@@ -14,10 +15,15 @@ import NotebookEditor from './NotebookEditor.jsx';
 import { isMarkdownPath } from './markdownPreview.js';
 import { isNotebookPath } from './notebook.js';
 import { loadPrefs, savePrefs, monacoOptions } from './editorPrefs.js';
+import { EDITOR_THEME_IDS, isCustomId, themeIsDark, defineCustomThemes } from './editorThemes.js';
+import ThemeEditor from './ThemeEditor.jsx';
+import ThemePicker from './ThemePicker.jsx';
+import { createRainbow } from './csvRainbow.js';
+import { canDebug, toggleAtCursor, toggleBreakpoint } from './debug.js';
 import { changedRegion, showLiveDiff, clearLiveDiff } from './liveDiff.js';
 
-const LANG = { js: 'javascript', jsx: 'javascript', mjs: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', md: 'markdown', py: 'python', html: 'html', css: 'css', yml: 'yaml', yaml: 'yaml', sh: 'shell', java: 'java', go: 'go', rs: 'rust', c: 'c', cpp: 'cpp', sql: 'sql', xml: 'xml', rb: 'ruby', php: 'php' };
-export const langOf = (p) => LANG[p.split('.').pop().toLowerCase()] || 'plaintext';
+const LANG = { r: 'r', js: 'javascript', jsx: 'javascript', mjs: 'javascript', ts: 'typescript', tsx: 'typescript', json: 'json', md: 'markdown', py: 'python', html: 'html', css: 'css', yml: 'yaml', yaml: 'yaml', sh: 'shell', java: 'java', go: 'go', rs: 'rust', c: 'c', cpp: 'cpp', sql: 'sql', xml: 'xml', rb: 'ruby', php: 'php' };
+export const langOf = (p) => { const ext = p.split('.').pop().toLowerCase(); return LANG[ext] || MONACO_EXTENSIONS[ext] || 'plaintext'; };
 const EMPTY = { hasEditor: false, line: 1, col: 1, selChars: 0, selLines: 0, cursors: 1, tabSize: 2, insertSpaces: true, eol: 'LF', lang: 'plaintext' };
 
 // An image open read only in its own tab (there is nothing to edit or save): an image the agent produced, or an image file in the project.
@@ -33,7 +39,7 @@ function ImageTab({ project, tab }) {
 }
 
 // Editor area: menu bar, file tabs, the Monaco editor, and a status bar.
-export default function EditorPane({ project, tabs, active, canWrite, defaultTheme, onSelect, onClose, onCloseAll, onChange, onTabPatch, onSave, onSaveAll, onNewFile, onPreview, onQuickOpen, onSearch, goto, note, onNoteClose }) {
+export default function EditorPane({ project, tabs, active, canWrite, defaultTheme, onSelect, onClose, onCloseAll, onChange, onTabPatch, onSave, onSaveAll, onNewFile, onPreview, onQuickOpen, onSearch, goto, note, onNoteClose, customThemes = [], onSaveThemes }) {
   const [prefs, setPrefsState] = useState(loadPrefs);
   const [status, setStatus] = useState(EMPTY);
   const [nbActions, setNbActions] = useState(null); // Run all / Restart / Save of the open notebook editor, shown in the Notebook menu
@@ -91,6 +97,29 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
   const textTab = !!tab && !tab.preview && !tab.image;
   const showToggle = textTab && isCsvPath(tab.path);
   const gridOpen = showToggle && tab.view === 'grid';
+  // Rainbow CSV colors the text view of a CSV. The palette follows the editor's own background (the pinned or app-default theme).
+  const csvText = textTab && isCsvPath(tab.path) && !gridOpen;
+  // The editor's theme: the user's choice while it still exists (a deleted custom theme falls back to the app default).
+  const known = (id) => EDITOR_THEME_IDS.includes(id) || customThemes.some((t) => t.id === id);
+  const editorTheme = prefs.theme && known(prefs.theme) ? prefs.theme : defaultTheme;
+  const rainbowArgs = useRef({}); rainbowArgs.current = { on: !!prefs.rainbowCsv && csvText, dark: themeIsDark(editorTheme, customThemes) };
+  // User themes are defined in Monaco under their ids. Monaco may have been asked for one before it existed, so it is set again once defined.
+  const themeRef = useRef({}); themeRef.current = { list: customThemes, name: editorTheme };
+  useEffect(() => { const m = editorRef.current.monaco; if (!m) return; defineCustomThemes(m, customThemes); if (isCustomId(editorTheme)) m.editor.setTheme(editorTheme); }, [customThemes, editorTheme]);
+  // The theme editor dialog: { id } to edit a theme, { id: null } for a new one, null while closed.
+  const [themeDlg, setThemeDlg] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false); // the Color theme chooser
+  const pickTheme = (id) => { setPickerOpen(false); setPrefs({ ...prefsRef.current.prefs, theme: id }); };
+  const saveThemes = async (list, { apply, removed }) => {
+    await onSaveThemes(list);
+    const p = prefsRef.current.prefs;
+    if (apply) setPrefs({ ...p, theme: apply });
+    else if (removed && p.theme === removed) setPrefs({ ...p, theme: '' });
+    setThemeDlg(null);
+  };
+  // A language with a debugger gets a Debug menu and a breakpoint gutter.
+  const debuggable = !!tab && !tab.preview && !tab.image && canDebug(tab.lang || langOf(tab.path));
+  useEffect(() => { editorRef.current.rainbow?.set(rainbowArgs.current.on, rainbowArgs.current.dark); }, [prefs.rainbowCsv, editorTheme, tab?.path, gridOpen]); // eslint-disable-line
   const previewLabel = tab && isNb(tab.preview ? tab.source : tab.path) ? 'Open notebook editor' : 'Open Markdown preview';
   // A notebook tab edits its source tab's JSON in place, so it is editable only while that tab is open.
   const nbSource = tab?.preview && isNb(tab.source) ? tabs.find((t) => t.path === tab.source) : undefined;
@@ -102,7 +131,7 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
 
   return (
     <Box onKeyDown={onKeyDown} sx={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, minHeight: 0 }}>
-      <EditorMenuBar editorRef={editorRef} project={project} tab={tab} tabs={tabs} canWrite={canWrite} dirty={dirty} prefs={prefs} setPrefs={setPrefs}
+      <EditorMenuBar editorRef={editorRef} project={project} tab={tab} tabs={tabs} canWrite={canWrite} dirty={dirty} prefs={prefs} setPrefs={setPrefs} debuggable={debuggable} onColorThemes={() => setPickerOpen(true)}
         onSave={onSave} onSaveAll={onSaveAll} onNewFile={onNewFile} onCloseTab={onClose} onCloseAll={onCloseAll} onSwitchTab={switchTab} onQuickOpen={onQuickOpen} onSearch={onSearch} notebook={tab?.preview && isNb(tab.source) ? nbActions : null} previewLabel={previewLabel} onPreview={canPreview ? () => onPreview(tab.path) : undefined} />
       {note}
       <Box sx={{ display: 'flex', alignItems: 'center', borderBottom: 1, borderColor: 'divider' }}>
@@ -127,19 +156,29 @@ export default function EditorPane({ project, tabs, active, canWrite, defaultThe
           : tab?.preview ? <MarkdownPreview source={tab.source} content={previewText} />
           : gridOpen ? <CsvGrid key={tab.path} text={tab.content} readOnly={!canWrite || !!tab.streaming} onChange={(v) => onChange(tab.path, v)} />
           : tab ? (
-          <Editor path={`${project.id}/${tab.path}`} language={tab.lang || langOf(tab.path)} value={tab.content} theme={prefs.theme || defaultTheme}
-            options={monacoOptions(prefs, !canWrite || !!tab.streaming)} onChange={(v) => onChange(tab.path, v ?? '')}
+          <Editor path={`${project.id}/${tab.path}`} language={tab.lang || langOf(tab.path)} value={tab.content} theme={editorTheme}
+            options={monacoOptions(prefs, !canWrite || !!tab.streaming, debuggable)} onChange={(v) => onChange(tab.path, v ?? '')}
             onMount={(ed, monaco) => {
               editorRef.current.editor = ed; editorRef.current.monaco = monaco;
+              defineCustomThemes(monaco, themeRef.current.list); if (isCustomId(themeRef.current.name)) monaco.editor.setTheme(themeRef.current.name);
               ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current?.());
               ed.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyZ, () => { const { prefs: p, setPrefs: sp } = prefsRef.current; sp({ ...p, wordWrap: !p.wordWrap }); });
               if (monaco.KeyCode.KeyV !== undefined) ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyV, () => previewRef.current?.());
+              // Breakpoints: F9 on the cursor line, or a click in the gutter. Only in a language that can be debugged.
+              const debugLang = () => canDebug(ed.getModel?.()?.getLanguageId());
+              ed.addCommand(monaco.KeyCode.F9, () => { if (debugLang()) toggleAtCursor(ed, monaco); });
+              ed.onMouseDown?.((e) => { if (debugLang() && e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) toggleBreakpoint(ed, monaco, e.target.position.lineNumber); });
+              editorRef.current.rainbow = createRainbow(ed, monaco);
+              editorRef.current.rainbow.set(rainbowArgs.current.on, rainbowArgs.current.dark);
               const subs = [ed.onDidChangeCursorPosition(refresh), ed.onDidChangeCursorSelection(refresh), ed.onDidChangeModel(refresh), ed.onDidChangeModelLanguage?.(refresh), ed.onDidChangeModelOptions?.(refresh), ed.onDidChangeModelContent(refresh)].filter(Boolean);
               ed.onDidDispose?.(() => subs.forEach((s) => s.dispose?.()));
               refresh(); gotoRef.current(); // the editor was only just created for a file opened from a search result
             }} />
         ) : <Box sx={{ p: 4, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'text.secondary' }}><Typography sx={{ fontStyle: 'italic' }}>Open a file from the Explorer, or use the Agent panel to plan and build.</Typography></Box>}
       </Box>
+      <ThemePicker open={pickerOpen} current={prefs.theme} active={editorTheme} defaultTheme={defaultTheme} customThemes={customThemes} onPick={pickTheme}
+        onNewTheme={() => { setPickerOpen(false); setThemeDlg({ id: null }); }} onEditTheme={(id) => { setPickerOpen(false); setThemeDlg({ id }); }} onClose={() => setPickerOpen(false)} />
+      <ThemeEditor open={!!themeDlg} themes={customThemes} editId={themeDlg?.id ?? null} startFrom={editorTheme} onSave={saveThemes} onClose={() => setThemeDlg(null)} />
       <EditorStatusBar editorRef={editorRef} hasFile={textTab && !gridOpen} status={textTab && !gridOpen ? status : EMPTY} readOnly={!canWrite} dirty={dirty} langOverride={!!tab?.lang} onLanguage={(id) => tab && onTabPatch(tab.path, { lang: id || undefined })} />
     </Box>
   );

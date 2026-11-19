@@ -27,7 +27,7 @@ describe('profile account', () => {
 
 describe('profile preferences', () => {
   it('returns defaults, then persists partial updates and includes them in /me', async () => {
-    expect((await u.get('/api/profile/preferences')).body).toEqual({ colorMode: null, fontScale: 100, reduceMotion: false, highContrast: false, underlineLinks: false, autoCompact: false });
+    expect((await u.get('/api/profile/preferences')).body).toEqual({ colorMode: null, fontScale: 100, reduceMotion: false, highContrast: false, underlineLinks: false, autoCompact: false, customEditorThemes: [] });
     const r = await u.put('/api/profile/preferences').send({ colorMode: 'dark', reduceMotion: true });
     expect(r.body).toMatchObject({ colorMode: 'dark', reduceMotion: true, fontScale: 100 });
     await u.put('/api/profile/preferences').send({ fontScale: 130 });

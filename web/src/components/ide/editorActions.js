@@ -40,3 +40,6 @@ export function setEol(editor, monaco, crlf) { editor?.getModel()?.setEOL(crlf ?
 
 export const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
 export const mod = () => (isMac() ? '⌘' : 'Ctrl+');
+// A shortcut as this platform writes it. "Mod" is Cmd on a Mac and Ctrl elsewhere, which is what Monaco's CtrlCmd binds to.
+const MAC_KEYS = { Mod: '⌘', Ctrl: '⌃', Shift: '⇧', Alt: '⌥', Up: '↑', Down: '↓', Enter: '⏎' };
+export const shortcut = (...keys) => (isMac() ? keys.map((k) => MAC_KEYS[k] ?? k).join('') : keys.map((k) => (k === 'Mod' ? 'Ctrl' : k)).join('+'));

@@ -33,13 +33,18 @@ import StatusPane from '../components/ide/StatusPane.jsx';
 import ContactPane from '../components/ide/ContactPane.jsx';
 
 import { useSearchParams } from 'react-router-dom';
+
+const NO_THEMES = [];
 const IMAGE_PREFIX = 'attachment:'; // namespaces an image tab's path so it never collides with a project file
 
 const lastProjectId = () => { try { return localStorage.getItem('ideProject'); } catch { return null; } };
 const rememberProject = (id) => { try { localStorage.setItem('ideProject', String(id)); } catch { /* storage may be unavailable */ } };
 
 export default function IDE() {
-  const { can, config } = useAuth();
+  const { can, config, user, refresh } = useAuth();
+  // The user's own editor themes (kept per user on the server). Saving stores the whole list, then reloads the user.
+  const customThemes = user?.preferences?.customEditorThemes || NO_THEMES;
+  const saveThemes = useCallback(async (list) => { await put('/api/profile/preferences', { customEditorThemes: list }); await refresh(); }, [refresh]);
   const [params] = useSearchParams(); const wanted = Number(params.get('project')) || undefined; // e.g. a course exercise opens its own workspace
   const [projects, setProjects] = useState([]); const [project, setProject] = useState(null);
   const [tree, setTree] = useState([]); const [tabs, setTabs] = useState([]); const [active, setActive] = useState(null);
@@ -297,7 +302,7 @@ export default function IDE() {
   );
 
   const editor = (
-    <EditorPane project={project} tabs={tabs} active={active} canWrite={canWrite} defaultTheme={monacoTheme}
+    <EditorPane project={project} tabs={tabs} active={active} canWrite={canWrite} defaultTheme={monacoTheme} customThemes={customThemes} onSaveThemes={saveThemes}
       onSelect={setActive} onClose={close} onCloseAll={closeAll}
       onChange={(path, v) => setTabs((ts) => ts.map((t) => (t.path === path ? { ...t, content: v } : t)))} onTabPatch={(path, patch) => setTabs((ts) => ts.map((t) => (t.path === path ? { ...t, ...patch } : t)))}
       onSave={save} onSaveAll={saveAll} onPreview={openPreview} goto={goto} onQuickOpen={() => setDialog('quickopen')} onSearch={showSearch} onNewFile={() => fileActions.newFile('')}

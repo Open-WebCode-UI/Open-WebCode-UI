@@ -2,6 +2,7 @@
 // (which would run third-party script on this origin with no integrity check).
 import * as monaco from 'monaco-editor';
 import { loader } from '@monaco-editor/react';
+import { defineEditorThemes } from './components/ide/editorThemes.js';
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker';
 import JsonWorker from 'monaco-editor/language/json/json.worker?worker';
 import CssWorker from 'monaco-editor/language/css/css.worker?worker';
@@ -18,3 +19,4 @@ self.MonacoEnvironment = {
   },
 };
 loader.config({ monaco });
+defineEditorThemes(monaco); // Mocha, Cobalt, Midnight, Grass: registered once, before any editor is created

@@ -21,7 +21,7 @@ function fakeEditor(over = {}) {
     executeEdits: vi.fn(), pushUndoStop: vi.fn(), addCommand: vi.fn(), onDidDispose: vi.fn(), ...Object.fromEntries(['CursorPosition', 'CursorSelection', 'Model', 'ModelLanguage', 'ModelOptions', 'ModelContent'].map((n) => [`onDidChange${n}`, (cb) => { listeners.push(cb); return { dispose() {} }; }])) };
   return { ed, state, model, fire: () => listeners.forEach((l) => l()) };
 }
-const monaco = { KeyMod: { CtrlCmd: 1 }, KeyCode: { KeyS: 2 }, editor: { EndOfLineSequence: { LF: 0, CRLF: 1 } }, languages: { getLanguages: () => [{ id: 'javascript', aliases: ['JavaScript', 'js'] }, { id: 'python', aliases: ['Python'] }, { id: 'plaintext', aliases: ['Plain Text'] }, { id: 'typescript', aliases: ['TypeScript'] }] } };
+const monaco = { KeyMod: { CtrlCmd: 1 }, KeyCode: { KeyS: 2 }, editor: { EndOfLineSequence: { LF: 0, CRLF: 1 }, defineTheme: vi.fn(), setTheme: vi.fn() }, languages: { getLanguages: () => [{ id: 'javascript', aliases: ['JavaScript', 'js'] }, { id: 'python', aliases: ['Python'] }, { id: 'plaintext', aliases: ['Plain Text'] }, { id: 'typescript', aliases: ['TypeScript'] }] } };
 let fake, editorProps;
 vi.mock('@monaco-editor/react', () => ({
   default: (props) => { editorProps = props; return <div data-testid="monaco" data-language={props.language} data-theme={props.theme}><button onClick={() => props.onMount(fake.ed, monaco)}>mount-editor</button></div>; },
@@ -39,14 +39,23 @@ function pane(over = {}) {
 }
 const mount = async () => { await userEvent.click(screen.getByText('mount-editor')); };
 const openMenu = (n) => userEvent.click(screen.getByRole('button', { name: n }));
-const item = (n) => { const name = new RegExp(`^${n}`); return screen.queryByRole('menuitem', { name }) ?? screen.getByRole('menuitemcheckbox', { name }); };
+// A menu item by its label. An exact label wins; otherwise the first item that starts with the text (so 'Go to symbol' finds 'Go to symbol in editor…').
+const itemLabel = (m) => m.querySelector('.MuiListItemText-root')?.textContent ?? m.textContent;
+const item = (n) => {
+  const all = [...screen.queryAllByRole('menuitem'), ...screen.queryAllByRole('menuitemcheckbox')];
+  return all.find((m) => itemLabel(m) === n) ?? all.find((m) => itemLabel(m).startsWith(n)) ?? screen.getByRole('menuitem', { name: new RegExp(`^${n}`) });
+};
 const click = async (menu, name) => { await openMenu(menu); await userEvent.click(item(name)); };
+// Editor themes are chosen in the Color theme dialog, opened from View.
+const openPicker = async () => { await openMenu('View'); await userEvent.click(item('Color theme')); return screen.findByRole('dialog', { name: 'Color theme' }); };
+const pickTheme = async (label) => { const dlg = await openPicker(); await userEvent.click(within(dlg).getByRole('button', { name: label })); await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Color theme' })).toBeNull()); };
+const themeItem = async (label) => within(await openPicker()).getByRole('button', { name: label });
 
 beforeEach(() => { fake = fakeEditor(); localStorage.clear(); editorProps = null; });
 
 describe('editor menu bar (top bar)', () => {
   it('has File / Edit / View / Go menus (workspace layout lives in the app header, not here)', () => {
-    pane(); expect(within(screen.getByRole('navigation', { name: 'Editor menu' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['File', 'Edit', 'View', 'Go']);
+    pane(); expect(within(screen.getByRole('navigation', { name: 'Editor menu' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['File', 'Edit', 'View', 'Go', 'Debug']); // a .js file can be debugged, so Debug shows
   });
   it.each([
     ['Find', 'actions.find'], ['Replace', 'editor.action.startFindReplace'], ['Undo', 'undo'], ['Redo', 'redo'], ['Select all', 'editor.action.selectAll'],
@@ -132,8 +141,8 @@ describe('view preferences', () => {
     pane(); expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', 'vs-dark');
     await click('View', 'Zoom in'); await click('View', 'Zoom in'); expect(editorProps.options.fontSize).toBe(15);
     await click('View', 'Zoom out'); expect(editorProps.options.fontSize).toBe(14); await click('View', 'Reset zoom'); expect(editorProps.options.fontSize).toBe(13);
-    await click('View', 'Editor theme: light'); expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', 'vs');
-    await click('View', 'Editor theme: app default'); expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', 'vs-dark');
+    await pickTheme('Light'); expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', 'vs');
+    await pickTheme('App default'); expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', 'vs-dark');
   });
   it('survives corrupt stored preferences', () => { localStorage.setItem('ide-editor-prefs-v1', '{oops'); pane(); expect(editorProps.options.fontSize).toBe(13); });
   it('the editor is read-only without files.write', () => { pane({ canWrite: false }); expect(editorProps.options.readOnly).toBe(true); });
@@ -284,5 +293,132 @@ describe('IdeLayout: names, drag, and drop, resizing, persistence', () => {
   it('saves the layout shortly after it changes', async () => {
     view(movePane(DEFAULT_LAYOUT, 'chat', 'editor', 'bottom')); await waitFor(() => expect(visiblePanes(JSON.parse(localStorage.getItem('ide-layout-v2')))).toContain('chat'));
     expect(JSON.parse(localStorage.getItem('ide-layout-v2')).v).toBe(2);
+  });
+});
+
+describe('editor shortcuts, Rainbow CSV, debugging, and color modes', () => {
+  it.each([
+    ['Move line up', 'editor.action.moveLinesUpAction'], ['Move line down', 'editor.action.moveLinesDownAction'], ['Copy line up', 'editor.action.copyLinesUpAction'],
+    ['Copy line down', 'editor.action.copyLinesDownAction'], ['Delete line', 'editor.action.deleteLines'], ['Insert line below', 'editor.action.insertLineAfter'],
+    ['Insert line above', 'editor.action.insertLineBefore'], ['Indent', 'editor.action.indentLines'], ['Outdent', 'editor.action.outdentLines'], ['Rename symbol', 'editor.action.rename'],
+    ['Select next occurrence', 'editor.action.addSelectionToNextFindMatch'], ['Select all occurrences', 'editor.action.selectHighlights'],
+    ['Add cursor above', 'editor.action.insertCursorAbove'], ['Add cursor below', 'editor.action.insertCursorBelow'],
+  ])('Edit → %s runs Monaco command %s', async (label, id) => {
+    pane(); await mount(); await click('Edit', label); expect(fake.ed.trigger).toHaveBeenCalledWith('menu', id, null);
+  });
+  it('Peek definition runs from the Go menu, and the new items show their shortcuts', async () => {
+    pane(); await mount(); await click('Go', 'Peek definition'); expect(fake.ed.trigger).toHaveBeenCalledWith('menu', 'editor.action.peekDefinition', null);
+    await openMenu('Edit');
+    expect(item('Move line up').textContent).toContain('Alt+Up'); expect(item('Delete line').textContent).toContain('Ctrl+Shift+K');
+    expect(item('Select next occurrence').textContent).toContain('Ctrl+D'); expect(item('Insert line below').textContent).toContain('Ctrl+Enter');
+    expect(item('Format document').textContent).toContain('Shift+Alt+F');
+  });
+  it('multi-cursor is Alt+click by default and can be switched to Ctrl+click', async () => {
+    pane(); await mount(); expect(editorProps.options.multiCursorModifier).toBe('alt');
+    await click('Edit', 'Multi-cursor with mouse'); expect(editorProps.options.multiCursorModifier).toBe('ctrlCmd'); expect(loadPrefs().altClickCursors).toBe(false);
+  });
+  it('the Debug menu is offered for a debuggable language, with breakpoints live and the run and step items disabled', async () => {
+    pane({ active: 'src/b.py' }); await mount();
+    expect(within(screen.getByRole('navigation', { name: 'Editor menu' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['File', 'Edit', 'View', 'Go', 'Debug']);
+    await openMenu('Debug');
+    for (const n of ['Start / continue', 'Step over', 'Step into', 'Step out']) expect(item(n)).toHaveAttribute('aria-disabled', 'true');
+    expect(item('Toggle breakpoint')).not.toHaveAttribute('aria-disabled', 'true');
+    expect(editorProps.options.glyphMargin).toBe(true);
+  });
+  it('a language without a debugger gets no Debug menu and no breakpoint gutter', () => {
+    pane({ tabs: [{ path: 'notes.txt', content: 'hi', saved: 'hi' }], active: 'notes.txt' });
+    expect(within(screen.getByRole('navigation', { name: 'Editor menu' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['File', 'Edit', 'View', 'Go']);
+  });
+  it('Rainbow CSV is offered in View for an open CSV, and the choice is remembered', async () => {
+    pane({ tabs: [{ path: 'data/t.csv', content: 'a,b\n1,2\n', saved: 'a,b\n1,2\n' }], active: 'data/t.csv' });
+    await click('View', 'Rainbow CSV'); expect(loadPrefs().rainbowCsv).toBe(true);
+    await openMenu('View'); expect(item('Rainbow CSV')).toHaveAttribute('aria-checked', 'true');
+  });
+  it('Rainbow CSV is not offered for other files', async () => {
+    pane(); await openMenu('View'); expect(screen.queryByRole('menuitemcheckbox', { name: /Rainbow CSV/ })).toBeNull();
+  });
+  it.each([['Mocha', 'mocha'], ['Cobalt', 'cobalt'], ['Midnight', 'midnight'], ['Grass', 'grass'], ['Homebrew', 'homebrew'], ['Man page', 'man-page'], ['Novel', 'novel'], ['Ocean', 'ocean'], ['Red sands', 'red-sands'], ['Silver aerogel', 'silver-aerogel'], ['Barbie', 'barbie'], ['Dracula', 'dracula'], ['Solar light', 'solar-light'], ['Solar dark', 'solar-dark'], ['Panda', 'panda'], ['Positron', 'positron'], ['Selenized', 'selenized'], ['Skeletor', 'skeletor'], ['Tokyo', 'tokyo'], ['Dreamweaver', 'dreamweaver'], ['Eclipse', 'eclipse']])('the %s color mode can be chosen from the Editor theme submenu and is applied', async (label, id) => {
+    pane(); await pickTheme(label);
+    expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', id); expect(loadPrefs().theme).toBe(id);
+    expect(await themeItem(label)).toHaveAttribute('aria-current', 'true');
+  });
+  it('Color theme opens a dialog listing every theme under Built in, with a preview', async () => {
+    pane(); const dlg = await openPicker();
+    expect(within(dlg).getByText('Built in')).toBeInTheDocument(); expect(within(dlg).getByTestId('theme-preview')).toBeInTheDocument();
+    expect(within(dlg).getAllByRole('button').map((b) => b.textContent)).toEqual(['App default', 'Light', 'Dark', 'Barbie', 'Cobalt', 'Dracula', 'Dreamweaver', 'Eclipse', 'Grass', 'High contrast', 'Homebrew', 'Man page', 'Midnight', 'Mocha', 'Novel', 'Ocean', 'Panda', 'Positron', 'Red sands', 'Selenized', 'Silver aerogel', 'Skeletor', 'Solar dark', 'Solar light', 'Tokyo', 'New theme…', 'Edit this theme…', 'Cancel']);
+  });
+});
+
+describe('language detection by file extension', () => {
+  it('R files are detected as R, whatever the case of the extension (CPP already was)', async () => {
+    const { langOf } = await import('../src/components/ide/EditorPane.jsx');
+    expect(langOf('analysis/fit.R')).toBe('r'); expect(langOf('analysis/fit.r')).toBe('r'); expect(langOf('src/main.cpp')).toBe('cpp');
+  });
+  it('other languages Monaco ships are detected too, and unknown extensions stay plain text', async () => {
+    const { langOf } = await import('../src/components/ide/EditorPane.jsx');
+    expect(langOf('a/init.lua')).toBe('lua'); expect(langOf('ops/run.PS1')).toBe('powershell'); expect(langOf('x/Main.kt')).toBe('kotlin');
+    expect(langOf('x/build.gradle.dsl')).toBe('plaintext'); expect(langOf('notes.zzz')).toBe('plaintext');
+  });
+});
+
+describe('color theme dialog, and the user theme editor', () => {
+  const MINE = { id: 'custom-abcd1234', name: 'Night owl', dark: true, colors: { 'editor.background': '#101820', 'editor.foreground': '#e0e8f0', 'editorLineNumber.foreground': '#506070', 'editorLineNumber.activeForeground': '#ffd700', 'editor.selectionBackground': '#244060', 'editor.lineHighlightBackground': '#182838', 'editorCursor.foreground': '#ffd700', 'editorWidget.background': '#182838' }, tokens: { comment: '#607080', keyword: '#c792ea', string: '#c3e88d', number: '#f78c6c', type: '#82aaff', delimiter: '#e0e8f0' } };
+
+  it('hovering a theme shows its preview in the dialog', async () => {
+    pane(); const dlg = await openPicker();
+    await userEvent.hover(within(dlg).getByRole('button', { name: 'Solar light' }));
+    expect(within(dlg).getByText('Light', { selector: '.MuiTypography-caption' })).toBeInTheDocument();
+    await userEvent.hover(within(dlg).getByRole('button', { name: 'Dracula' }));
+    expect(within(dlg).getByText('Dark', { selector: '.MuiTypography-caption' })).toBeInTheDocument();
+  });
+  it('lists the user\'s own themes under My themes, and applies one', async () => {
+    pane({ customThemes: [MINE] }); const dlg = await openPicker();
+    expect(within(dlg).getByText('My themes')).toBeInTheDocument();
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Night owl' }));
+    expect(screen.getByTestId('monaco')).toHaveAttribute('data-theme', MINE.id);
+    expect(loadPrefs().theme).toBe(MINE.id);
+  });
+  it('a saved custom theme is defined in Monaco with its colors', async () => {
+    pane({ customThemes: [MINE] }); await mount();
+    expect(monaco.editor.defineTheme).toHaveBeenCalledWith(MINE.id, expect.objectContaining({ base: 'vs-dark', colors: MINE.colors }));
+  });
+  it('Edit this theme is offered only when the previewed theme is the user\'s own', async () => {
+    pane({ customThemes: [MINE] }); const dlg = await openPicker();
+    expect(within(dlg).getByRole('button', { name: /Edit this theme/ })).toBeDisabled();
+    await userEvent.hover(within(dlg).getByRole('button', { name: 'Night owl' }));
+    expect(within(dlg).getByRole('button', { name: /Edit this theme/ })).toBeEnabled();
+  });
+  it('New theme opens the editor; saving sends the whole list and applies the new theme', async () => {
+    const onSaveThemes = vi.fn(async () => {});
+    pane({ customThemes: [], onSaveThemes, defaultTheme: 'vs-dark' });
+    const picker = await openPicker();
+    await userEvent.click(within(picker).getByRole('button', { name: /New theme/ }));
+    const dlg = await screen.findByRole('dialog', { name: 'New theme' });
+    await userEvent.clear(within(dlg).getByLabelText('Name')); await userEvent.type(within(dlg).getByLabelText('Name'), 'Dusk');
+    fireEvent.change(within(dlg).getByLabelText('Background'), { target: { value: '#112233' } });
+    expect(within(dlg).getByLabelText('Background hex color')).toHaveValue('#112233');
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaveThemes).toHaveBeenCalled());
+    const [list] = onSaveThemes.mock.calls[0];
+    expect(list).toHaveLength(1); expect(list[0]).toMatchObject({ name: 'Dusk', dark: true, colors: expect.objectContaining({ 'editor.background': '#112233' }) });
+    expect(list[0].id).toMatch(/^custom-[a-z0-9]{4,32}$/);
+    expect(loadPrefs().theme).toBe(list[0].id);
+  });
+  it('an invalid color keeps Save disabled', async () => {
+    pane({ customThemes: [] }); const picker = await openPicker();
+    await userEvent.click(within(picker).getByRole('button', { name: /New theme/ }));
+    const dlg = await screen.findByRole('dialog', { name: 'New theme' });
+    await userEvent.clear(within(dlg).getByLabelText('Background hex color')); await userEvent.type(within(dlg).getByLabelText('Background hex color'), '#12');
+    expect(within(dlg).getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+  it('deleting asks twice, then sends the list without that theme', async () => {
+    const onSaveThemes = vi.fn(async () => {});
+    localStorage.setItem('ide-editor-prefs-v1', JSON.stringify({ theme: MINE.id }));
+    pane({ customThemes: [MINE], onSaveThemes }); const picker = await openPicker();
+    await userEvent.click(within(picker).getByRole('button', { name: /Edit this theme/ }));
+    const dlg = await screen.findByRole('dialog', { name: 'Edit theme: Night owl' });
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Delete' }));
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => expect(onSaveThemes).toHaveBeenCalledWith([]));
   });
 });

@@ -1,15 +1,20 @@
 import { useRef, useState } from 'react';
 import { Box, Button, Divider, ListItemIcon, ListItemText, Menu, MenuItem, Typography } from '@mui/material';
 import CheckIcon from '@mui/icons-material/Check';
-import { copy, cut, paste, run, baseName, downloadText, mod } from './editorActions.js';
+import { copy, cut, paste, run, baseName, downloadText, mod, shortcut, isMac } from './editorActions.js';
 import { MIN_FONT, MAX_FONT } from './editorPrefs.js';
+import { EDITOR_THEMES } from './editorThemes.js';
+import { isCsvPath } from './csv.js';
+import { toggleAtCursor } from './debug.js';
 
-// Menu bar above the editor tabs: File / Edit / View / Go. Edit, View, and Go drive the real Monaco editor. (Workspace layout
-// is in the app header, since it is not about the editor.)
-export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite, dirty, prefs, setPrefs, onSave, onSaveAll, onNewFile, onCloseTab, onCloseAll, onSwitchTab, onPreview, onQuickOpen, onSearch, notebook, previewLabel = 'Open Markdown preview' }) {
+// Menu bar above the editor tabs: File / Edit / View / Go, plus Debug for a language that can be debugged. Edit, View, and Go drive
+// the real Monaco editor. (Workspace layout is in the app header, since it is not about the editor.)
+export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite, dirty, prefs, setPrefs, onSave, onSaveAll, onNewFile, onCloseTab, onCloseAll, onSwitchTab, onPreview, onQuickOpen, onSearch, notebook, debuggable = false, onColorThemes, previewLabel = 'Open Markdown preview' }) {
   const [open, setOpen] = useState(null); // { name, anchor }
   const ed = () => editorRef.current?.editor;
   const hasTab = !!tab && !tab.preview, writable = hasTab && canWrite, M = mod();
+  // Rainbow CSV is offered only while a CSV is open as text (the grid view has no Monaco text to color).
+  const csvText = hasTab && !tab.image && isCsvPath(tab.path) && tab.view !== 'grid';
   const close = () => setOpen(null);
   // An action runs only after the menu has finished closing. Run straight away, Monaco's own UI (the command palette in particular)
   // opens first and then loses focus when the menu hands focus back to its button, which dismisses it.
@@ -46,7 +51,25 @@ export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite,
       D,
       M_('Select all', cmd('editor.action.selectAll'), { shortcut: `${M}A`, disabled: !hasTab }),
       M_('Toggle line comment', cmd('editor.action.commentLine'), { shortcut: `${M}/`, disabled: !writable }),
-      M_('Format document', cmd('editor.action.formatDocument'), { shortcut: 'Shift+Alt+F', disabled: !writable }),
+      M_('Format document', cmd('editor.action.formatDocument'), { shortcut: shortcut('Shift', 'Alt', 'F'), disabled: !writable }),
+      D,
+      M_('Move line up', cmd('editor.action.moveLinesUpAction'), { shortcut: shortcut('Alt', 'Up'), disabled: !writable }),
+      M_('Move line down', cmd('editor.action.moveLinesDownAction'), { shortcut: shortcut('Alt', 'Down'), disabled: !writable }),
+      M_('Copy line up', cmd('editor.action.copyLinesUpAction'), { shortcut: shortcut('Shift', 'Alt', 'Up'), disabled: !writable }),
+      M_('Copy line down', cmd('editor.action.copyLinesDownAction'), { shortcut: shortcut('Shift', 'Alt', 'Down'), disabled: !writable }),
+      M_('Delete line', cmd('editor.action.deleteLines'), { shortcut: shortcut('Mod', 'Shift', 'K'), disabled: !writable }),
+      M_('Insert line below', cmd('editor.action.insertLineAfter'), { shortcut: shortcut('Mod', 'Enter'), disabled: !writable }),
+      M_('Insert line above', cmd('editor.action.insertLineBefore'), { shortcut: shortcut('Mod', 'Shift', 'Enter'), disabled: !writable }),
+      D,
+      M_('Indent', cmd('editor.action.indentLines'), { shortcut: shortcut('Tab'), disabled: !writable }),
+      M_('Outdent', cmd('editor.action.outdentLines'), { shortcut: shortcut('Shift', 'Tab'), disabled: !writable }),
+      M_('Rename symbol', cmd('editor.action.rename'), { shortcut: 'F2', disabled: !writable }),
+      D,
+      M_('Select next occurrence', cmd('editor.action.addSelectionToNextFindMatch'), { shortcut: shortcut('Mod', 'D'), disabled: !hasTab }),
+      M_('Select all occurrences', cmd('editor.action.selectHighlights'), { shortcut: shortcut('Mod', 'Shift', 'L'), disabled: !hasTab }),
+      M_('Add cursor above', cmd('editor.action.insertCursorAbove'), { shortcut: shortcut('Mod', 'Alt', 'Up'), disabled: !hasTab }),
+      M_('Add cursor below', cmd('editor.action.insertCursorBelow'), { shortcut: shortcut('Mod', 'Alt', 'Down'), disabled: !hasTab }),
+      M_(`Multi-cursor with mouse (${isMac() ? '⌥' : 'Alt+'}click)`, act(() => set({ altClickCursors: !prefs.altClickCursors })), { checked: prefs.altClickCursors !== false }),
     ],
     View: [
       M_(previewLabel, act(onPreview), { shortcut: `${M === '⌘' ? '⇧⌘' : 'Ctrl+Shift+'}V`, disabled: !onPreview }),
@@ -57,15 +80,13 @@ export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite,
       M_('Minimap', act(() => set({ minimap: !prefs.minimap })), { checked: prefs.minimap }),
       M_('Show whitespace', act(() => set({ whitespace: !prefs.whitespace })), { checked: prefs.whitespace }),
       M_('Line numbers', act(() => set({ lineNumbers: !prefs.lineNumbers })), { checked: prefs.lineNumbers }),
+      ...(csvText ? [M_('Rainbow CSV', act(() => set({ rainbowCsv: !prefs.rainbowCsv })), { checked: !!prefs.rainbowCsv })] : []),
       D,
       M_('Zoom in', act(() => set({ fontSize: Math.min(MAX_FONT, prefs.fontSize + 1) })), { disabled: prefs.fontSize >= MAX_FONT }),
       M_('Zoom out', act(() => set({ fontSize: Math.max(MIN_FONT, prefs.fontSize - 1) })), { disabled: prefs.fontSize <= MIN_FONT }),
       M_('Reset zoom', act(() => set({ fontSize: 13 }))),
       D,
-      M_('Editor theme: app default', act(() => set({ theme: '' })), { checked: prefs.theme === '' }),
-      M_('Editor theme: light', act(() => set({ theme: 'vs' })), { checked: prefs.theme === 'vs' }),
-      M_('Editor theme: dark', act(() => set({ theme: 'vs-dark' })), { checked: prefs.theme === 'vs-dark' }),
-      M_('Editor theme: high contrast', act(() => set({ theme: 'hc-black' })), { checked: prefs.theme === 'hc-black' }),
+      M_('Color theme…', act(() => onColorThemes?.()), { disabled: !onColorThemes }),
       D,
       M_('Fold all', cmd('editor.foldAll'), { disabled: !hasTab }),
       M_('Unfold all', cmd('editor.unfoldAll'), { disabled: !hasTab }),
@@ -86,6 +107,7 @@ export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite,
       M_('Go to symbol in editor…', cmd('editor.action.quickOutline'), { shortcut: M === '⌘' ? '⇧⌘O' : 'Ctrl+Shift+O', disabled: !hasTab }),
       D,
       M_('Go to definition', cmd('editor.action.revealDefinition'), { shortcut: 'F12', disabled: !hasTab }),
+      M_('Peek definition', cmd('editor.action.peekDefinition'), { shortcut: shortcut('Alt', 'F12'), disabled: !hasTab }),
       M_('Go to declaration', cmd('editor.action.revealDeclaration'), { disabled: !hasTab }),
       M_('Go to type definition', cmd('editor.action.goToTypeDefinition'), { disabled: !hasTab }),
       M_('Go to implementations', cmd('editor.action.goToImplementation'), { shortcut: `${M}F12`, disabled: !hasTab }),
@@ -98,7 +120,25 @@ export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite,
       M_('Next tab', act(() => onSwitchTab(1)), { disabled: tabs.length < 2 }),
       M_('Previous tab', act(() => onSwitchTab(-1)), { disabled: tabs.length < 2 }),
     ],
+    ...(debuggable ? { Debug: [
+      // Running and stepping need a debug adapter on the server, which is not there yet, so these stay disabled.
+      M_('Start / continue', undefined, { shortcut: 'F5', disabled: true }),
+      M_('Step over', undefined, { shortcut: 'F10', disabled: true }),
+      M_('Step into', undefined, { shortcut: 'F11', disabled: true }),
+      M_('Step out', undefined, { shortcut: shortcut('Shift', 'F11'), disabled: true }),
+      D,
+      M_('Toggle breakpoint', act(() => toggleAtCursor(ed(), editorRef.current?.monaco)), { shortcut: 'F9', disabled: !hasTab }),
+    ] } : {}),
   };
+
+  // One selectable menu row: a check mark for a choice, a shortcut for a command.
+  const row = (it) => (
+    <MenuItem key={it.label} disabled={it.disabled} onClick={it.onClick} role={it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'} aria-checked={it.checked}>
+      {it.checked !== undefined && <ListItemIcon sx={{ minWidth: 28 }}>{it.checked ? <CheckIcon fontSize="small" /> : null}</ListItemIcon>}
+      <ListItemText>{it.label}</ListItemText>
+      {it.shortcut && <Typography variant="caption" color="text.secondary" sx={{ ml: 3 }}>{it.shortcut}</Typography>}
+    </MenuItem>
+  );
 
   return (
     <Box component="nav" aria-label="Editor menu" sx={{ display: 'flex', alignItems: 'center', px: 0.5, minHeight: 30, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
@@ -108,13 +148,9 @@ export default function EditorMenuBar({ editorRef, project, tab, tabs, canWrite,
           onMouseEnter={(e) => open && open.name !== name && setOpen({ name, anchor: e.currentTarget })}>{name}</Button>
       ))}
       <Menu anchorEl={open?.anchor} open={!!open} onClose={close} disableRestoreFocus slotProps={{ paper: { sx: { minWidth: 230 } }, transition: { onExited: afterClose } }} MenuListProps={{ dense: true, 'aria-label': open?.name }}>
-        {open && menus[open.name].map((it, i) => (it.divider ? <Divider key={i} /> : (
-          <MenuItem key={it.label} disabled={it.disabled} onClick={it.onClick} role={it.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'} aria-checked={it.checked}>
-            {it.checked !== undefined && <ListItemIcon sx={{ minWidth: 28 }}>{it.checked ? <CheckIcon fontSize="small" /> : null}</ListItemIcon>}
-            <ListItemText>{it.label}</ListItemText>
-            {it.shortcut && <Typography variant="caption" color="text.secondary" sx={{ ml: 3 }}>{it.shortcut}</Typography>}
-          </MenuItem>)))}
+        {open && menus[open.name].map((it, i) => (it.divider ? <Divider key={i} /> : row(it)))}
       </Menu>
+      {/* The nested menu sits to the right of its parent item, and stays open while its own items are chosen. */}
     </Box>
   );
 }

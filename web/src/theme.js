@@ -1,4 +1,5 @@
 import { createTheme } from '@mui/material/styles';
+import { EDITOR_THEME_IDS } from './components/ide/editorThemes.js';
 
 export const DEFAULT_BRANDING = {
   primaryColor: '#3f51b5', secondaryColor: '#009688', colorMode: 'manual', primaryColorDark: '#8c9eff', secondaryColorLight: '#00796b',
@@ -11,7 +12,7 @@ export const deviceMode = () => { try { return window.matchMedia?.('(prefers-col
 // 'system' (the device setting) resolves to light or dark.
 export const resolveMode = (mode) => (mode === 'light' || mode === 'dark' ? mode : deviceMode());
 // The code editor follows the app's resolved mode unless the administrator pinned a specific editor theme.
-export const resolveMonaco = (setting, mode) => (['vs', 'vs-dark', 'hc-black'].includes(setting) ? setting : mode === 'dark' ? 'vs-dark' : 'vs');
+export const resolveMonaco = (setting, mode) => (EDITOR_THEME_IDS.includes(setting) ? setting : mode === 'dark' ? 'vs-dark' : 'vs');
 
 // WCAG relative luminance and contrast ratio of two #rrggbb colors.
 const lum = (h) => { const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };

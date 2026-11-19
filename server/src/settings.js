@@ -60,7 +60,7 @@ export const schemas = {
     fontUrl: z.union([z.literal(''), z.url().refine((u) => u.startsWith('https://'))]),
     borderRadius: z.number().int().min(0).max(32),
     density: z.enum(['comfortable', 'compact']),
-    monacoTheme: z.enum(['system', 'vs', 'vs-dark', 'hc-black']),
+    monacoTheme: z.enum(['system', 'vs', 'vs-dark', 'hc-black', 'mocha', 'cobalt', 'midnight', 'grass', 'homebrew', 'man-page', 'novel', 'ocean', 'red-sands', 'silver-aerogel', 'barbie', 'dracula', 'solar-light', 'solar-dark', 'panda', 'positron', 'selenized', 'skeletor', 'tokyo', 'dreamweaver', 'eclipse']),
     loginText: z.string().max(2000),
     personaName: z.string().trim().max(60),
     logoDataUrl: z.string().max(700_000),
