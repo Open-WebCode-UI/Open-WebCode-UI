@@ -40,13 +40,15 @@ export function attachTerminalWs(server, { manager = defaultManager, sweepMs = 3
     send({ type: 'ready', kind: term.kind, cols: term.cols, rows: term.rows });
     // When the shell ends (it exited, was killed, or shell mode was switched off) close the socket too, so clients react at once.
     const detach = term.attach((m) => { send(m); if (m.type === 'exit') setTimeout(() => ws.close(1000, 'shell ended'), 30); });
-    if (term.kind === 'user') await audit(sess.user.id, 'terminal.attach', String(term.projectId));
+    // The input listener must be in place before anything awaits: the client sees the prompt as soon as it attaches and may type
+    // at once, and a message that arrives with no listener is dropped.
     ws.on('message', (raw) => {
       let m; try { m = JSON.parse(raw.toString()); } catch { return; }
       if (term.kind !== 'user') return; // the agent's terminal is read-only for viewers
       if (m.type === 'input' && typeof m.data === 'string' && m.data.length <= 65_536) term.write(m.data);
       else if (m.type === 'resize') term.resize(Number(m.cols), Number(m.rows));
     });
+    if (term.kind === 'user') await audit(sess.user.id, 'terminal.attach', String(term.projectId));
     // Re-validate regularly: revoked session, disabled user, lost permission, or shell mode switched off all end the connection.
     const timer = setInterval(async () => {
       const s = await loadSession(sess.id), perms = s && await permsFor(s.user.id, term.projectId).catch(() => null);

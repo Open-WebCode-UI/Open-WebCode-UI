@@ -3,6 +3,7 @@ import { migrateToLatest } from './migrator.js';
 import { loadSettings } from '../settings.js';
 import { ALL_PERMISSIONS, BUILTIN_ROLES } from '../permissions.js';
 import { resolveDbConfig } from './connection.js';
+import { insertId } from './dialect.js';
 
 let current = null;
 
@@ -31,8 +32,7 @@ export async function seedRoles(knex) {
   for (const [name, def] of Object.entries(BUILTIN_ROLES)) {
     let row = await knex('roles').where({ name }).first('id');
     if (!row) {
-      const [inserted] = await knex('roles').insert({ name, description: def.description, builtin: 1 }).returning('id');
-      row = { id: Number(inserted?.id ?? inserted) };
+      row = { id: await insertId(knex('roles'), { name, description: def.description, builtin: 1 }) };
     }
     // Administrator is immutable: always resynced to the full permission list.
     if (name === 'administrator') {
