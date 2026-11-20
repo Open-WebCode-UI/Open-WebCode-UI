@@ -7,6 +7,8 @@ export const trx = (knex, fn) => knex.transaction(fn);
 
 /** Inserts one row and returns its auto-increment id (Knex yields it differently per engine). */
 export async function insertId(q, row, idColumn = 'id') {
+  // MariaDB/MySQL have no RETURNING (knex warns on every call): its insert already resolves to [insertId].
+  if (engineOf(q) === 'mariadb') return Number((await q.insert(row))[0]);
   const res = await q.insert(row).returning(idColumn);
   const first = Array.isArray(res) ? res[0] : res;
   return Number(first && typeof first === 'object' ? first[idColumn] : first);

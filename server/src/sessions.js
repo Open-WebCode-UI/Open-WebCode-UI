@@ -1,5 +1,5 @@
 import { getKnex } from './db/index.js';
-import { trx } from './db/dialect.js';
+import { insertId, trx } from './db/dialect.js';
 import { normalizeConclusion } from './agent/conclusion.js';
 
 // ---------- storage
@@ -15,8 +15,7 @@ export async function persistFrom(convId, messages, fromIndex, events = []) {
     const before = (await t('messages').where({ conversation_id: convId }).max({ id: 'id' }).first()).id ?? 0;
     const ids = [];
     for (const m of messages.slice(fromIndex)) { // one at a time, so ids follow the order of the conversation
-      const [row] = await t('messages').insert({ conversation_id: convId, role: m.role, content: JSON.stringify(m) }).returning('id');
-      ids.push(Number(row?.id ?? row));
+      ids.push(await insertId(t('messages'), { conversation_id: convId, role: m.role, content: JSON.stringify(m) }));
     }
     for (const e of events) {
       await t('checkpoint_events').insert({ conversation_id: convId, checkpoint_id: e.id, label: e.label, author: e.author, anchor_message_id: e.offset > 0 ? Number(ids[Math.min(e.offset, ids.length) - 1] ?? before) : before });
