@@ -1,0 +1,107 @@
+# Test pipeline. Runs on every push and on every pull request into main.
+# Make the jobs below required status checks in the main branch protection rule so that
+# a branch cannot be merged into main until they pass.
+name: Tests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Full suite (server + web) on the default SQLite engine.
+  test:
+    name: test (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  # Whole server suite on PostgreSQL 16 (the compose file's version; the minimum supported is 14).
+  test-postgres:
+    name: test (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_ENGINE: postgres
+      TEST_PG_URL: postgres://test:test@localhost:55432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run server tests on PostgreSQL
+        run: npm run test:postgres -w server
+
+  # Whole server suite on MariaDB 11 (the compose file's version; the minimum supported is 10.6).
+  test-mariadb:
+    name: test (MariaDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: test
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_ENGINE: mariadb
+      TEST_MARIADB_URL: mysql://root:test@localhost:53306/
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run server tests on MariaDB
+        run: npm run test:mariadb -w server
